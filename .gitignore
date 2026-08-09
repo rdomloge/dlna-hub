@@ -29,6 +29,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 package-lock.json
+*.tsbuildinfo
 
 ## Logs
 *.log
