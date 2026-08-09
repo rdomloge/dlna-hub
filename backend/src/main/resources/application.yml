@@ -1,0 +1,30 @@
+server:
+  port: 9100
+
+dlna:
+  network-interface: ${NETWORK_INTERFACE:10.0.0.150}
+  discovery-timeout: 5000
+  discovery-interval: ${DISCOVERY_INTERVAL:60000}
+  static-device-check-interval: ${STATIC_DEVICE_CHECK_INTERVAL:5000}
+  # Optional fallback for devices that Windows AppContainer isolation hides from local SSDP.
+  static-devices:
+    - udn: ${STATIC_RENDERER_UDN:5ae95e81-4e22-43dc-bdde-50adad44df6e}
+      descriptor-url: ${STATIC_RENDERER_DESCRIPTOR_URL:http://10.0.0.150:1258/}
+      port-range-start: ${STATIC_RENDERER_PORT_RANGE_START:1024}
+      port-range-end: ${STATIC_RENDERER_PORT_RANGE_END:2048}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    # Suppress jUPnP's noisy WARN for devices with malformed descriptors
+    # (e.g., invalid deviceType like urn:schemas-upnp-org:device:3.0-AMC046002B16D40155)
+    org.jupnp.protocol.RetrieveRemoteDescriptors: ERROR
+    # Some devices advertise protected descriptors with an invalid HTTP 401 response.
+    org.jupnp.util.SpecificationViolationReporter: ERROR
+    # Recovery attempts are expected for malformed third-party device descriptors.
+    org.jupnp.binding.xml.RecoveringUDA10DeviceDescriptorBinderImpl: ERROR

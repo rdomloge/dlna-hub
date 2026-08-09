@@ -1,0 +1,47 @@
+## Java
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+*.par
+
+## Maven
+backend/target/
+
+## IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.vscode/
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+package-lock.json
+
+## Logs
+*.log
+
+## Env
+.env
+.env.local
+PLAN.md
+stage-1.md
+stage-2.md
+stage-3.md
+stage-4.md
+stage-5.md
+stage-6.md
+stage-7.md
+stage-8.md
