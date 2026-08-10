@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import Header from '@/components/Header';
 import {
@@ -15,6 +15,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { usePlaybackStore } from '@/store/usePlaybackStore';
 import { useVisibility } from '@/hooks/useVisibility';
 import { formatTime, parseTime } from '@/utils/formatTime';
+import { cleanMediaTitle, formatSubtitle } from '@/utils/cleanMediaTitle';
 import type { BrowsableItem } from '@/types/media';
 
 export default function PlaybackPage() {
@@ -52,6 +53,9 @@ export default function PlaybackPage() {
   const navItem = (location.state as { item?: BrowsableItem } | null)?.item;
   const item = navItem || activeItem;
 
+  const [parsedSubtitle, setParsedSubtitle] = useState<string>('');
+  const parsedTitle = useMemo(() => cleanMediaTitle(trackTitle), [trackTitle]);
+
   useEffect(() => {
     if (!selectedPlayer) {
       navigate('/players');
@@ -67,6 +71,8 @@ export default function PlaybackPage() {
     setTrackArtist(navItem.artist || '');
     setTrackAlbum(navItem.album || '');
     setActiveItem(navItem);
+    const parsed = cleanMediaTitle(navItem.title || '');
+    setParsedSubtitle(formatSubtitle(parsed.year, parsed.season, parsed.episode));
 
     if (!navItem.resourceName) {
       setPlayerError('Media item has no playback URL');
@@ -75,7 +81,7 @@ export default function PlaybackPage() {
     }
 
     play(selectedPlayer.id, navItem.resourceName!, {
-      title: navItem.title,
+      title: cleanMediaTitle(navItem.title || '').cleansedTitle,
       artist: navItem.artist,
       album: navItem.album,
       duration: navItem.duration,
@@ -148,7 +154,7 @@ export default function PlaybackPage() {
         await pause(selectedPlayer.id);
       } else if (navItem?.resourceName) {
         await play(selectedPlayer.id, navItem.resourceName, {
-          title: navItem.title,
+          title: cleanMediaTitle(navItem.title || '').cleansedTitle,
           artist: navItem.artist,
           album: navItem.album,
           duration: navItem.duration,
@@ -271,12 +277,19 @@ export default function PlaybackPage() {
                 className="w-32 h-32 object-cover rounded-lg mx-auto mb-4"
               />
             )}
-            <h2 className="text-xl font-bold text-gray-900">{trackTitle}</h2>
-            {trackArtist && (
-              <p className="text-gray-500 mt-1">{trackArtist}</p>
-            )}
-            {trackAlbum && (
-              <p className="text-sm text-gray-400 mt-0.5">{trackAlbum}</p>
+            <h2 className="text-xl font-bold text-gray-900">{parsedTitle.cleansedTitle}</h2>
+            {(parsedSubtitle || trackArtist || trackAlbum) && (
+              <div className="mt-1 space-y-0.5">
+                {parsedSubtitle && (
+                  <p className="text-sm text-gray-400">{parsedSubtitle}</p>
+                )}
+                {trackArtist && (
+                  <p className="text-gray-500">{trackArtist}</p>
+                )}
+                {trackAlbum && (
+                  <p className="text-sm text-gray-400 mt-0.5">{trackAlbum}</p>
+                )}
+              </div>
             )}
           </div>
 
