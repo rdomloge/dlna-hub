@@ -232,7 +232,8 @@ public class AvTransportService {
         return new PositionInfo(
                 getOutput(invocation, action, "TrackURI"),
                 getOutput(invocation, action, "TrackDuration"),
-                getOutput(invocation, action, "RelTime")
+                getOutput(invocation, action, "RelTime"),
+                getOutput(invocation, action, "TrackMetaData")
         );
     }
 
@@ -292,6 +293,6 @@ public class AvTransportService {
         }
     }
 
-    public record PositionInfo(String trackUri, String trackDuration, String trackPosition) {
+    public record PositionInfo(String trackUri, String trackDuration, String trackPosition, String trackMetaData) {
     }
 }

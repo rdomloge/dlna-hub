@@ -1,5 +1,6 @@
 package com.dlnahub.controller;
 
+import com.dlnahub.dlna.util.DidlUtils;
 import com.dlnahub.exception.DlnaException;
 import com.dlnahub.dto.PlayRequestDto;
 import com.dlnahub.dto.PlaybackStatusDto;
@@ -87,16 +88,19 @@ public class PlaybackController {
         String trackUri;
         String trackDuration;
         String trackPosition;
+        String trackTitle;
         try {
             var positionInfo = avTransportService.getPositionInfo(playerId);
             trackUri = positionInfo.trackUri();
             trackDuration = positionInfo.trackDuration();
             trackPosition = positionInfo.trackPosition();
+            trackTitle = DidlUtils.extractTitleFromMetadata(positionInfo.trackMetaData());
         } catch (Exception e) {
             log.warn("GetPositionInfo failed for player {}: {}", playerId, e.getMessage());
             trackUri = "";
             trackDuration = "00:00:00";
             trackPosition = "00:00:00";
+            trackTitle = null;
         }
         int volume = renderingControlService.getVolume(playerId);
 
@@ -105,6 +109,7 @@ public class PlaybackController {
         dto.setTrackUri(trackUri);
         dto.setTrackDuration(trackDuration);
         dto.setTrackPosition(trackPosition);
+        dto.setTrackTitle(trackTitle);
         dto.setVolume(volume);
 
         return ResponseEntity.ok(dto);

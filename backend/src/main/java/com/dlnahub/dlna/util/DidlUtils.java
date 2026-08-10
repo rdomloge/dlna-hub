@@ -90,6 +90,16 @@ public class DidlUtils {
         return sb.toString();
     }
 
+    public static String extractTitleFromMetadata(String metadataXml) {
+        if (metadataXml == null || metadataXml.isEmpty()) return null;
+        int start = metadataXml.indexOf("<dc:title>");
+        if (start == -1) return null;
+        start += "<dc:title>".length();
+        int end = metadataXml.indexOf("</dc:title>", start);
+        if (end == -1) return null;
+        return metadataXml.substring(start, end);
+    }
+
     private static String escapeXml(String input) {
         if (input == null) return "";
         return input.replace("&", "&amp;")

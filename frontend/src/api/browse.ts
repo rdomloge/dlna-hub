@@ -17,6 +17,21 @@ export function browse(
     .then((res) => res.data);
 }
 
+export function search(
+  serverId: string,
+  query: string,
+  containerId: string = '0',
+  index: number = 0,
+  count: number = 50,
+  sortBy: SortOption = ''
+): Promise<BrowseResult> {
+  return api
+    .get(`/servers/${serverId}/search`, {
+      params: { containerId, query, index, count, sortBy },
+    })
+    .then((res) => res.data);
+}
+
 export function getMetadata(
   serverId: string,
   itemId: string

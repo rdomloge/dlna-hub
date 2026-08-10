@@ -13,6 +13,7 @@ import {
 } from '@/api/playback';
 import { useAppStore } from '@/store/useAppStore';
 import { usePlaybackStore } from '@/store/usePlaybackStore';
+import { useVisibility } from '@/hooks/useVisibility';
 import { formatTime, parseTime } from '@/utils/formatTime';
 import type { BrowsableItem } from '@/types/media';
 
@@ -28,6 +29,12 @@ export default function PlaybackPage() {
   const setDuration = usePlaybackStore((s) => s.setDuration);
   const volume = usePlaybackStore((s) => s.volume);
   const setVolumeState = usePlaybackStore((s) => s.setVolume);
+  const reconnecting = usePlaybackStore((s) => s.reconnecting);
+  const setReconnecting = usePlaybackStore((s) => s.setReconnecting);
+  const activeItem = usePlaybackStore((s) => s.activeItem);
+  const setActiveItem = usePlaybackStore((s) => s.setActiveItem);
+
+  const isVisible = useVisibility();
 
   const [trackTitle, setTrackTitle] = useState('');
   const [trackArtist, setTrackArtist] = useState('');
@@ -38,47 +45,46 @@ export default function PlaybackPage() {
 
   const scrubRef = useRef<HTMLInputElement>(null);
   const consecutiveErrorsRef = useRef(0);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isStartingRef = useRef(false);
+  const isScrubbingRef = useRef(false);
 
-  const item = (location.state as { item?: BrowsableItem } | null)?.item;
+  const navItem = (location.state as { item?: BrowsableItem } | null)?.item;
+  const item = navItem || activeItem;
 
   useEffect(() => {
     if (!selectedPlayer) {
       navigate('/players');
       return;
     }
-    if (!item) {
-      navigate('/browse');
-      return;
-    }
-  }, [selectedPlayer, item, navigate]);
+  }, [selectedPlayer, navigate]);
 
   useEffect(() => {
-    if (!item || !selectedPlayer) return;
+    if (!navItem || !selectedPlayer || isStartingRef.current) return;
+    isStartingRef.current = true;
 
-    setTrackTitle(item.title || '');
-    setTrackArtist(item.artist || '');
-    setTrackAlbum(item.album || '');
+    setTrackTitle(navItem.title || '');
+    setTrackArtist(navItem.artist || '');
+    setTrackAlbum(navItem.album || '');
+    setActiveItem(navItem);
 
-    if (!item.resourceName) {
+    if (!navItem.resourceName) {
       setPlayerError('Media item has no playback URL');
+      isStartingRef.current = false;
       return;
     }
 
-    const startPlayback = window.setTimeout(() => {
-      play(selectedPlayer.id, item.resourceName!, {
-        title: item.title,
-        artist: item.artist,
-        album: item.album,
-        duration: item.duration,
-        mimeType: item.mimeType,
-        protocolInfo: item.protocolInfo,
-      }).catch(() => {
-        setPlayerError('Failed to start playback');
-      });
-    }, 0);
-
-    return () => window.clearTimeout(startPlayback);
-  }, [item, selectedPlayer]);
+    play(selectedPlayer.id, navItem.resourceName!, {
+      title: navItem.title,
+      artist: navItem.artist,
+      album: navItem.album,
+      duration: navItem.duration,
+      mimeType: navItem.mimeType,
+      protocolInfo: navItem.protocolInfo,
+    }).catch(() => {
+      setPlayerError('Failed to start playback');
+    });
+  }, [navItem, selectedPlayer]);
 
   const MAX_CONSECUTIVE_ERRORS = 3;
 
@@ -90,37 +96,65 @@ export default function PlaybackPage() {
       setIsPlaying(status.state === 'PLAYING');
       setVolumeState(status.volume);
 
-      const pos = parseTime(status.trackPosition || '00:00:00');
-      setCurrentTime(pos);
+      if (!isScrubbingRef.current) {
+        const pos = parseTime(status.trackPosition || '00:00:00');
+        setCurrentTime(pos);
 
-      const dur = parseTime(status.trackDuration || '00:00:00');
-      setDuration(dur);
+        const dur = parseTime(status.trackDuration || '00:00:00');
+        setDuration(dur);
+      }
 
       if (status.trackTitle) setTrackTitle(status.trackTitle);
       setPlayerError(null);
+      setReconnecting(false);
     } catch (err) {
       consecutiveErrorsRef.current += 1;
       setPlayerError('Player disconnected');
       setIsPlaying(false);
+      setReconnecting(false);
       if (consecutiveErrorsRef.current >= MAX_CONSECUTIVE_ERRORS) {
         navigate('/players');
       }
     }
-  }, [selectedPlayer, setIsPlaying, setVolumeState, setCurrentTime, setDuration, navigate]);
+  }, [selectedPlayer, setIsPlaying, setVolumeState, setCurrentTime, setDuration, navigate, setReconnecting]);
 
   useEffect(() => {
     if (!selectedPlayer) return;
-    consecutiveErrorsRef.current = 0;
-    pollStatus();
-    const interval = setInterval(pollStatus, 1000);
-    return () => clearInterval(interval);
-  }, [selectedPlayer, pollStatus]);
+
+    if (isVisible) {
+      setReconnecting(true);
+      pollStatus();
+      consecutiveErrorsRef.current = 0;
+      pollIntervalRef.current = setInterval(pollStatus, 1000);
+    } else {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [selectedPlayer, isVisible, pollStatus, setReconnecting]);
 
   const handlePlayPause = async () => {
     if (!selectedPlayer) return;
     try {
       if (isPlaying) {
         await pause(selectedPlayer.id);
+      } else if (navItem?.resourceName) {
+        await play(selectedPlayer.id, navItem.resourceName, {
+          title: navItem.title,
+          artist: navItem.artist,
+          album: navItem.album,
+          duration: navItem.duration,
+          mimeType: navItem.mimeType,
+          protocolInfo: navItem.protocolInfo,
+        });
       } else {
         await play(selectedPlayer.id, '');
       }
@@ -164,9 +198,11 @@ export default function PlaybackPage() {
 
   const handleScrubStart = () => {
     setIsScrubbing(true);
+    isScrubbingRef.current = true;
   };
 
   const handleScrubEnd = async () => {
+    isScrubbingRef.current = false;
     if (!selectedPlayer || !isScrubbing) {
       setIsScrubbing(false);
       return;
@@ -192,13 +228,13 @@ export default function PlaybackPage() {
     }
   };
 
-  if (!selectedPlayer || !item) {
+  if (!selectedPlayer) {
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col">
         <Header title="Playback" showBack />
         <main className="flex-1 flex items-center justify-center mt-14">
           <div className="text-center py-8 text-gray-600">
-            Please select a player and media first.
+            Please select a player first.
           </div>
         </main>
       </div>
@@ -209,6 +245,17 @@ export default function PlaybackPage() {
     <div className="min-h-screen bg-gray-100 flex flex-col">
       <Header title={selectedPlayer.name} showBack />
       <main className="flex-1 overflow-y-auto px-4 py-4 mt-14 pb-8">
+        {!item && !trackTitle && (
+          <div className="bg-white rounded-lg shadow-sm p-6 text-center mb-4">
+            <p className="text-gray-600">No media loaded</p>
+            <p className="text-sm text-gray-400 mt-1">Browse media or play something on the player</p>
+          </div>
+        )}
+        {reconnecting && (
+          <div className="bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-3 rounded-lg mb-4 text-center animate-pulse">
+            Reconnecting...
+          </div>
+        )}
         {playerError && (
           <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-4 text-center">
             {playerError}

@@ -3,11 +3,15 @@ import { useNavigate } from 'react-router-dom';
 interface HeaderProps {
   title?: string;
   showBack?: boolean;
+  onBack?: () => void;
+  showPlayer?: boolean;
 }
 
 export default function Header({
   title = 'DLNA Hub',
   showBack = false,
+  onBack,
+  showPlayer = false,
 }: HeaderProps) {
   const navigate = useNavigate();
 
@@ -35,7 +39,7 @@ export default function Header({
       </button>
       {showBack && (
         <button
-          onClick={() => navigate(-1)}
+          onClick={onBack ?? (() => navigate(-1))}
           className="mr-3 text-white hover:text-gray-300"
           aria-label="Go back"
         >
@@ -56,6 +60,28 @@ export default function Header({
         </button>
       )}
       <h1 className="text-lg font-semibold">{title}</h1>
+      {showPlayer && (
+        <button
+          onClick={() => navigate('/playback')}
+          className="ml-auto text-white hover:text-gray-300"
+          aria-label="Player controls"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"
+            />
+          </svg>
+        </button>
+      )}
     </header>
   );
 }
