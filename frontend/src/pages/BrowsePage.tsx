@@ -1,10 +1,13 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import { browse as browseApi, type SortOption } from '@/api/browse';
+import { browse as browseApi, search as searchApi, type SortOption } from '@/api/browse';
 import { useAppStore } from '@/store/useAppStore';
 import type { BrowsableItem } from '@/types/media';
+
+const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 400;
 
 const mediaType = (mimeType: string | null | undefined): 'video' | 'audio' | 'image' | 'other' => {
   if (!mimeType) return 'other';
@@ -41,69 +44,138 @@ export default function BrowsePage() {
   const navigate = useNavigate();
   const selectedServer = useAppStore((s) => s.selectedServer);
   const selectedPlayer = useAppStore((s) => s.selectedPlayer);
+  const browseState = useAppStore((s) => s.browseState);
+  const updateBrowseState = useAppStore((s) => s.updateBrowseState);
   const [items, setItems] = useState<BrowsableItem[]>([]);
-  const [objectId, setObjectId] = useState('0');
-  const [breadcrumb, setBreadcrumb] = useState<
-    { id: string; title: string }[]
-  >([{ id: '0', title: 'Root' }]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<SortOption>('');
   const [showSortMenu, setShowSortMenu] = useState(false);
 
-  useEffect(() => {
-    if (!selectedServer) {
-      navigate('/servers');
-      return;
-    }
-  }, [selectedServer, navigate]);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const isSearchingRef = useRef(false);
+  const isFetchingRef = useRef(false);
+  const searchQueryRef = useRef('');
 
-  const doBrowse = useCallback(
-    async (oid: string, index: number = 0, currentSort?: SortOption) => {
+  const objectId = browseState.objectId;
+  const breadcrumb = browseState.breadcrumb;
+  const sortBy = browseState.sortBy as SortOption;
+
+  const isSearching = searchQuery.trim().length > 0;
+
+  useEffect(() => {
+    searchQueryRef.current = searchQuery;
+  }, [searchQuery]);
+
+  const fetchItems = useCallback(
+    async (oid: string, index: number, currentSort?: SortOption, query?: string) => {
       if (!selectedServer) return;
-      setLoading(true);
-      setError(null);
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+      if (index === 0) setLoading(true);
+      if (index > 0) setLoadingMore(true);
+      const activeSort = currentSort ?? sortBy;
       try {
-        const activeSort = currentSort ?? sortBy;
-        const result = await browseApi(selectedServer.id, oid, index, 50, activeSort);
+        let result;
+        if (query && query.trim()) {
+          result = await searchApi(selectedServer.id, query.trim(), oid, index, PAGE_SIZE, activeSort);
+          isSearchingRef.current = true;
+        } else {
+          result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort);
+          isSearchingRef.current = false;
+        }
         setItems((prev) => (index === 0 ? result.items : [...prev, ...result.items]));
-        setObjectId(oid);
         setCurrentIndex(index);
         setHasMore(index + result.count < result.total);
       } catch (err: any) {
-        setError(err.message || 'Failed to browse content');
+        setError(err.message || 'Failed to load content');
       } finally {
         setLoading(false);
+        setLoadingMore(false);
+        isFetchingRef.current = false;
       }
     },
     [selectedServer, sortBy]
   );
 
+  const doBrowse = useCallback(
+    (oid: string, index: number = 0, currentSort?: SortOption, newBreadcrumb?: { id: string; title: string }[]) => {
+      updateBrowseState({ objectId: oid });
+      if (currentSort !== undefined) {
+        updateBrowseState({ sortBy: currentSort });
+      }
+      if (newBreadcrumb) {
+        updateBrowseState({ breadcrumb: newBreadcrumb });
+      }
+      setLoading(index === 0);
+      setError(null);
+      if (index > 0) setLoadingMore(true);
+      fetchItems(oid, index, currentSort, isSearchingRef.current ? searchQueryRef.current : undefined);
+    },
+    [fetchItems, updateBrowseState]
+  );
+
   useEffect(() => {
     if (selectedServer) {
-      doBrowse('0', 0);
+      doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
     }
   }, [selectedServer, doBrowse]);
 
-  const filteredItems = useMemo(() => {
-    if (!searchQuery.trim()) return items;
-    const q = searchQuery.toLowerCase();
-    return items.filter(
-      (item) =>
-        item.title?.toLowerCase().includes(q) ||
-        item.artist?.toLowerCase().includes(q) ||
-        item.album?.toLowerCase().includes(q)
+  useEffect(() => {
+    if (loading || loadingMore) return;
+    if (!hasMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && !isFetchingRef.current) {
+          const query = isSearchingRef.current ? searchQueryRef.current : undefined;
+          fetchItems(objectId, currentIndex + items.length, undefined, query);
+        }
+      },
+      { rootMargin: '200px' }
     );
-  }, [items, searchQuery]);
+
+    const current = sentinelRef.current;
+    if (current) observer.observe(current);
+    return () => {
+      observer.disconnect();
+    };
+  }, [objectId, currentIndex, items.length, hasMore, loading, loadingMore, fetchItems]);
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSearchQuery(value);
+
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    searchTimeoutRef.current = setTimeout(() => {
+      if (value.trim()) {
+        fetchItems(objectId, 0, undefined, value.trim());
+      } else {
+        isSearchingRef.current = false;
+        fetchItems(objectId, 0);
+      }
+    }, SEARCH_DEBOUNCE_MS);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    };
+  }, []);
 
   const handleNavigate = (item: BrowsableItem) => {
     if (item.isContainer) {
-      setBreadcrumb([...breadcrumb, { id: item.id, title: item.title }]);
-      doBrowse(item.id, 0);
+      updateBrowseState({ breadcrumb: [...breadcrumb, { id: item.id, title: item.title }] });
       setSearchQuery('');
+      isSearchingRef.current = false;
+      doBrowse(item.id, 0);
     } else {
       if (!selectedPlayer) {
         navigate('/players');
@@ -115,23 +187,19 @@ export default function BrowsePage() {
 
   const handleBreadcrumbClick = (index: number) => {
     const newBreadcrumb = breadcrumb.slice(0, index + 1);
-    setBreadcrumb(newBreadcrumb);
-    doBrowse(newBreadcrumb[newBreadcrumb.length - 1].id, 0);
+    updateBrowseState({ breadcrumb: newBreadcrumb });
     setSearchQuery('');
-  };
-
-  const handleLoadMore = () => {
-    if (selectedServer && hasMore) {
-      doBrowse(objectId, currentIndex + items.length);
-    }
+    isSearchingRef.current = false;
+    doBrowse(newBreadcrumb[newBreadcrumb.length - 1].id, 0);
   };
 
   const handleSortChange = (value: SortOption) => {
-    setSortBy(value);
+    updateBrowseState({ sortBy: value });
     setShowSortMenu(false);
+    setSearchQuery('');
+    isSearchingRef.current = false;
     setItems([]);
     doBrowse(objectId, 0, value);
-    setSearchQuery('');
   };
 
   const currentSortLabel = SORT_OPTIONS.find((o) => o.value === sortBy)?.label ?? 'Default';
@@ -149,7 +217,7 @@ export default function BrowsePage() {
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      <Header title={selectedServer.name} showBack />
+      <Header title={selectedServer.name} showBack onBack={() => handleBreadcrumbClick(breadcrumb.length - 2)} showPlayer={!!selectedPlayer} />
       <main className="flex-1 overflow-y-auto px-4 py-4 mt-14">
         <nav className="flex items-center gap-1 overflow-x-auto pb-2 mb-3 scrollbar-hide">
           {breadcrumb.map((crumb, idx) => (
@@ -199,13 +267,17 @@ export default function BrowsePage() {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               placeholder="Search items…"
               className="w-full pl-10 pr-8 py-2 bg-white rounded-lg shadow-sm text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-900"
             />
             {searchQuery && (
               <button
-                onClick={() => setSearchQuery('')}
+                onClick={() => {
+                  setSearchQuery('');
+                  isSearchingRef.current = false;
+                  fetchItems(objectId, 0);
+                }}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
               >
                 <svg
@@ -298,19 +370,19 @@ export default function BrowsePage() {
               Retry
             </button>
           </div>
-        ) : filteredItems.length === 0 ? (
+        ) : items.length === 0 ? (
           <div className="text-center py-8 text-gray-600">
-            {searchQuery ? `No items matching "${searchQuery}"` : 'This folder is empty.'}
+            {isSearching ? `No items matching "${searchQuery}"` : 'This folder is empty.'}
           </div>
         ) : (
           <>
-            {searchQuery && (
+            {isSearching && (
               <p className="text-xs text-gray-500 mb-2">
-                {filteredItems.length} of {items.length} items match "{searchQuery}"
+                Searching for "{searchQuery}"
               </p>
             )}
             <ul className="space-y-2">
-              {filteredItems.map((item) => {
+              {items.map((item) => {
                 const type = mediaType(item.mimeType);
                 return (
                   <li key={item.id}>
@@ -371,15 +443,10 @@ export default function BrowsePage() {
                 );
               })}
             </ul>
-            {hasMore && (
-              <div className="text-center mt-4">
-                <button
-                  onClick={handleLoadMore}
-                  disabled={loading}
-                  className="px-6 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50"
-                >
-                  {loading ? 'Loading...' : 'Load More'}
-                </button>
+            <div ref={sentinelRef} className="h-4" />
+            {(loading || loadingMore) && (
+              <div className="text-center py-4">
+                <LoadingSpinner />
               </div>
             )}
           </>

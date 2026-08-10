@@ -97,6 +97,111 @@ public class ContentBrowseService {
         return new BrowseResult(items, totalMatches, index, count, updateIdValue);
     }
 
+    public BrowseResult search(String serverId, String containerId, String query, int index, int count,
+                                String filter, String sortBy) {
+        if (query == null || query.trim().isEmpty()) {
+            return new BrowseResult(new ArrayList<>(), 0, index, count, "");
+        }
+
+        RemoteDevice device = serverBrowseService.getDevice(serverId);
+        if (device == null) {
+            throw new IllegalArgumentException("Server not found: " + serverId);
+        }
+
+        RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
+        if (contentDir == null) {
+            throw new IllegalStateException("ContentDirectory service not found on server: " + serverId);
+        }
+
+        Action searchAction = contentDir.getAction("Search");
+        if (searchAction != null) {
+            return searchViaAction(serverId, contentDir, containerId, query, index, count, filter, sortBy);
+        }
+
+        log.info("Search action not available on {}, falling back to in-memory search", serverId);
+        return searchInMemory(serverId, containerId, query, index, count, filter, sortBy);
+    }
+
+    private BrowseResult searchViaAction(String serverId, RemoteService contentDir, String containerId,
+                                          String query, int index, int count, String filter, String sortBy) {
+        String searchCriteria = buildSearchCriteria(query);
+
+        Action searchAction = contentDir.getAction("Search");
+        ActionInvocation invocation = new ActionInvocation(searchAction);
+        invocation.setInput("containerID", containerId);
+        invocation.setInput("searchCriteria", searchCriteria);
+        invocation.setInput("Filter", filter != null ? filter : "");
+        invocation.setInput("StartingIndex", String.valueOf(index));
+        invocation.setInput("RequestedCount", String.valueOf(count));
+        invocation.setInput("SortCriteria", sortBy != null ? sortBy : "");
+
+        executeSync(invocation);
+
+        String resultXml = getOutputString(invocation, "Result");
+        String totalMatchesStr = getOutputString(invocation, "TotalMatches");
+        String updateIdValue = getOutputString(invocation, "UpdateID");
+
+        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
+
+        for (BrowsableItem item : items) {
+            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
+                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
+            }
+        }
+
+        return new BrowseResult(items, totalMatches, index, count, updateIdValue);
+    }
+
+    private BrowseResult searchInMemory(String serverId, String containerId, String query, int index, int count,
+                                         String filter, String sortBy) {
+        List<BrowsableItem> allItems = new ArrayList<>();
+        int startIdx = 0;
+        int pageSize = 500;
+
+        while (true) {
+            BrowseResult page = browse(serverId, containerId, startIdx, pageSize, filter, sortBy);
+            allItems.addAll(page.getItems());
+            if (page.getItems().size() < pageSize) {
+                break;
+            }
+            startIdx += page.getItems().size();
+            if (startIdx > 50000) {
+                log.warn("In-memory search exceeded item limit for server={}, container={}", serverId, containerId);
+                break;
+            }
+        }
+
+        String q = query.toLowerCase();
+        List<BrowsableItem> matching = allItems.stream()
+                .filter(item -> {
+                    String title = item.getTitle() != null ? item.getTitle().toLowerCase() : "";
+                    String artist = item.getArtist() != null ? item.getArtist().toLowerCase() : "";
+                    String album = item.getAlbum() != null ? item.getAlbum().toLowerCase() : "";
+                    return title.contains(q) || artist.contains(q) || album.contains(q);
+                })
+                .collect(java.util.stream.Collectors.toList());
+
+        int total = matching.size();
+        int from = Math.min(index, total);
+        int to = Math.min(from + count, total);
+        List<BrowsableItem> paged = matching.subList(from, to);
+
+        for (BrowsableItem item : paged) {
+            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
+                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
+            }
+        }
+
+        return new BrowseResult(paged, total, index, count, "");
+    }
+
+    private String buildSearchCriteria(String query) {
+        String escaped = query.replace("\\", "\\\\").replace("'", "\\'");
+        return "(dc:title contains '" + escaped + "' OR dc:creator contains '" + escaped
+                + "' OR upnp:album contains '" + escaped + "')";
+    }
+
     public List<BrowsableItem> browseMetadata(String serverId, String itemId, String filter) {
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {

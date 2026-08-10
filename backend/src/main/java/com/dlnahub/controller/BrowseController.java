@@ -56,6 +56,30 @@ public class BrowseController {
         }
     }
 
+    @GetMapping("/{serverId}/search")
+    public ResponseEntity<?> search(
+            @PathVariable String serverId,
+            @RequestParam(value = "containerId", defaultValue = "0") String containerId,
+            @RequestParam String query,
+            @RequestParam(value = "index", defaultValue = "0") int index,
+            @RequestParam(value = "count", defaultValue = "50") int count,
+            @RequestParam(value = "filter", defaultValue = DEFAULT_FILTER) String filter,
+            @RequestParam(value = "sortBy", defaultValue = "") String sortBy) {
+        try {
+            log.debug("Search request: server={}, container={}, query={}, index={}, count={}",
+                    serverId, containerId, query, index, count);
+            BrowseResult result = contentBrowseService.search(serverId, containerId, query, index, count, filter, sortBy);
+            return ResponseEntity.ok(result);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            log.error("Search failed", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/{serverId}/browse/{itemId}/metadata")
     public ResponseEntity<?> metadata(
             @PathVariable String serverId,
