@@ -13,6 +13,12 @@ dlna:
       port-range-start: ${STATIC_RENDERER_PORT_RANGE_START:1024}
       port-range-end: ${STATIC_RENDERER_PORT_RANGE_END:2048}
 
+tmdb:
+  api-key: ${TMDB_API_KEY:}
+  api-read-access-token: ${TMDB_API_READ_ACCESS_TOKEN:}
+  image-base-url: https://image.tmdb.org/t/p/w500
+  search-type: ${TMDB_SEARCH_TYPE:both}
+
 management:
   endpoints:
     web:
