@@ -1,6 +1,14 @@
 package com.dlnahub.dlna.util;
 
 import com.dlnahub.dlna.model.BrowsableItem;
+import org.w3c.dom.Document;
+import org.w3c.dom.NodeList;
+import org.xml.sax.helpers.DefaultHandler;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 
 public class DidlUtils {
 
@@ -92,12 +100,24 @@ public class DidlUtils {
 
     public static String extractTitleFromMetadata(String metadataXml) {
         if (metadataXml == null || metadataXml.isEmpty()) return null;
-        int start = metadataXml.indexOf("<dc:title>");
-        if (start == -1) return null;
-        start += "<dc:title>".length();
-        int end = metadataXml.indexOf("</dc:title>", start);
-        if (end == -1) return null;
-        return metadataXml.substring(start, end);
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setXIncludeAware(false);
+            factory.setExpandEntityReferences(false);
+
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            builder.setErrorHandler(new DefaultHandler());
+            Document document = builder.parse(
+                    new ByteArrayInputStream(metadataXml.getBytes(StandardCharsets.UTF_8)));
+            NodeList titles = document.getElementsByTagNameNS("*", "title");
+            return titles.getLength() > 0 ? titles.item(0).getTextContent() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static String escapeXml(String input) {

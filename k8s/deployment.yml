@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dlna-hub
+  namespace: dlna-hub
+  labels:
+    app: dlna-hub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dlna-hub
+  template:
+    metadata:
+      labels:
+        app: dlna-hub
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: backend
+          image: rdomloge/dlna-hub-backend:latest
+          ports:
+            - containerPort: 9200
+              protocol: TCP
+              name: api
+          envFrom:
+            - secretRef:
+                name: dlna-hub-secret
+          env:
+            - name: NETWORK_INTERFACE
+              value: "eth0"
+            - name: SERVER_PORT
+              value: "9200"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 3000m
+              memory: 640Mi
+          startupProbe:
+            tcpSocket:
+              port: 9200
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 9200
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 9200
+            periodSeconds: 10
+
+        - name: frontend
+          image: rdomloge/dlna-hub-frontend:latest
+          ports:
+            - containerPort: 9201
+              protocol: TCP
+              name: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9201
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9201
+            initialDelaySeconds: 3
+            periodSeconds: 10

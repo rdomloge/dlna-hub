@@ -12,12 +12,12 @@ public class TmdbMediaDto {
     private String posterPath;
     private String backdropPath;
     private String releaseYear;
-    private List<String> genres;
+    private List<String> genres = List.of();
     private String runtime;
     private String posterUrl;
     private String backdropUrl;
-    private List<CastMemberDto> cast;
-    private List<CrewMemberDto> crew;
+    private List<CastMemberDto> cast = List.of();
+    private List<CrewMemberDto> crew = List.of();
 
     public String getTmdbId() {
         return tmdbId;

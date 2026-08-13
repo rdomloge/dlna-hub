@@ -51,7 +51,6 @@ export default function BrowsePage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSortMenu, setShowSortMenu] = useState(false);
 
@@ -59,6 +58,7 @@ export default function BrowsePage() {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const isSearchingRef = useRef(false);
   const isFetchingRef = useRef(false);
+  const latestRequestRef = useRef(0);
   const searchQueryRef = useRef('');
 
   const objectId = browseState.objectId;
@@ -74,29 +74,34 @@ export default function BrowsePage() {
   const fetchItems = useCallback(
     async (oid: string, index: number, currentSort?: SortOption, query?: string) => {
       if (!selectedServer) return;
-      if (isFetchingRef.current) return;
+      if (index > 0 && isFetchingRef.current) return;
+      const requestId = ++latestRequestRef.current;
       isFetchingRef.current = true;
       if (index === 0) setLoading(true);
       if (index > 0) setLoadingMore(true);
       const activeSort = currentSort ?? sortBy;
       try {
         let result;
-        if (query && query.trim()) {
-          result = await searchApi(selectedServer.id, query.trim(), oid, index, PAGE_SIZE, activeSort);
-          isSearchingRef.current = true;
+        const trimmedQuery = query?.trim() ?? '';
+        const searching = trimmedQuery.length > 0;
+        if (searching) {
+          result = await searchApi(selectedServer.id, trimmedQuery, oid, index, PAGE_SIZE, activeSort);
         } else {
           result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort);
-          isSearchingRef.current = false;
         }
+        if (requestId !== latestRequestRef.current) return;
+        isSearchingRef.current = searching;
         setItems((prev) => (index === 0 ? result.items : [...prev, ...result.items]));
-        setCurrentIndex(index);
         setHasMore(index + result.count < result.total);
       } catch (err: any) {
+        if (requestId !== latestRequestRef.current) return;
         setError(err.message || 'Failed to load content');
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
-        isFetchingRef.current = false;
+        if (requestId === latestRequestRef.current) {
+          setLoading(false);
+          setLoadingMore(false);
+          isFetchingRef.current = false;
+        }
       }
     },
     [selectedServer, sortBy]
@@ -122,8 +127,10 @@ export default function BrowsePage() {
   useEffect(() => {
     if (selectedServer) {
       doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
+    } else {
+      navigate('/servers');
     }
-  }, [selectedServer, doBrowse]);
+  }, [selectedServer, doBrowse, navigate]);
 
   useEffect(() => {
     if (loading || loadingMore) return;
@@ -133,7 +140,7 @@ export default function BrowsePage() {
       (entries) => {
         if (entries[0].isIntersecting && !isFetchingRef.current) {
           const query = isSearchingRef.current ? searchQueryRef.current : undefined;
-          fetchItems(objectId, currentIndex + items.length, undefined, query);
+          fetchItems(objectId, items.length, undefined, query);
         }
       },
       { rootMargin: '200px' }
@@ -144,7 +151,7 @@ export default function BrowsePage() {
     return () => {
       observer.disconnect();
     };
-  }, [objectId, currentIndex, items.length, hasMore, loading, loadingMore, fetchItems]);
+  }, [objectId, items.length, hasMore, loading, loadingMore, fetchItems]);
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -181,7 +188,7 @@ export default function BrowsePage() {
         navigate('/players');
         return;
       }
-      navigate('/playback', { state: { item } });
+      navigate('/playback', { state: { item, autoplay: true } });
     }
   };
 
@@ -191,6 +198,14 @@ export default function BrowsePage() {
     setSearchQuery('');
     isSearchingRef.current = false;
     doBrowse(newBreadcrumb[newBreadcrumb.length - 1].id, 0);
+  };
+
+  const handleBack = () => {
+    if (breadcrumb.length <= 1) {
+      navigate('/players');
+      return;
+    }
+    handleBreadcrumbClick(breadcrumb.length - 2);
   };
 
   const handleSortChange = (value: SortOption) => {
@@ -217,7 +232,7 @@ export default function BrowsePage() {
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      <Header title={selectedServer.name} showBack onBack={() => handleBreadcrumbClick(breadcrumb.length - 2)} showPlayer={!!selectedPlayer} />
+      <Header title={selectedServer.name} showBack onBack={handleBack} showPlayer={!!selectedPlayer} />
       <main className="flex-1 overflow-y-auto px-4 py-4 mt-14">
         <nav className="flex items-center gap-1 overflow-x-auto pb-2 mb-3 scrollbar-hide">
           {breadcrumb.map((crumb, idx) => (

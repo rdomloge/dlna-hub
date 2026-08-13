@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import Header from '@/components/Header';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { getServers } from '@/api/servers';
@@ -8,6 +8,7 @@ import type { MediaServer } from '@/types/server';
 
 export default function ServerSelectPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const setServers = useAppStore((s) => s.setServers);
   const setSelectedServer = useAppStore((s) => s.setSelectedServer);
   const [servers, setLocalServers] = useState<MediaServer[]>([]);
@@ -40,7 +41,7 @@ export default function ServerSelectPage() {
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      <Header title="Select a Server" showBack />
+      <Header title="Select a Server" showBack={location.pathname !== '/'} />
       <main className="flex-1 overflow-y-auto px-4 py-4 mt-14">
         {loading && servers.length === 0 ? (
           <LoadingSpinner />

@@ -7,13 +7,13 @@ public class PlaybackStatusDto {
     private String trackDuration;
     private String trackPosition;
     private String trackUri;
-    private int volume;
+    private Integer volume;
 
     public PlaybackStatusDto() {
     }
 
     public PlaybackStatusDto(String state, String trackTitle, String trackDuration,
-            String trackPosition, String trackUri, int volume) {
+            String trackPosition, String trackUri, Integer volume) {
         this.state = state;
         this.trackTitle = trackTitle;
         this.trackDuration = trackDuration;
@@ -62,11 +62,11 @@ public class PlaybackStatusDto {
         this.trackUri = trackUri;
     }
 
-    public int getVolume() {
+    public Integer getVolume() {
         return volume;
     }
 
-    public void setVolume(int volume) {
+    public void setVolume(Integer volume) {
         this.volume = volume;
     }
 }

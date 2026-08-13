@@ -23,8 +23,14 @@ export default function PlaybackPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedPlayer = useAppStore((s) => s.selectedPlayer);
+  const playbackStatus = usePlaybackStore((s) => s.status);
+  const setPlaybackStatus = usePlaybackStore((s) => s.setStatus);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
   const setIsPlaying = usePlaybackStore((s) => s.setIsPlaying);
+  const playingPending = usePlaybackStore((s) => s.playingPending);
+  const setPlayingPending = usePlaybackStore((s) => s.setPlayingPending);
+  const playingPendingSince = usePlaybackStore((s) => s.playingPendingSince);
+  const setPlayingPendingSince = usePlaybackStore((s) => s.setPlayingPendingSince);
   const currentTime = usePlaybackStore((s) => s.currentTime);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const duration = usePlaybackStore((s) => s.duration);
@@ -48,10 +54,16 @@ export default function PlaybackPage() {
   const scrubRef = useRef<HTMLInputElement>(null);
   const consecutiveErrorsRef = useRef(0);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollInFlightRef = useRef(false);
   const isStartingRef = useRef(false);
   const isScrubbingRef = useRef(false);
 
-  const navItem = (location.state as { item?: BrowsableItem } | null)?.item;
+  const navigationState = location.state as {
+    item?: BrowsableItem;
+    autoplay?: boolean;
+  } | null;
+  const navItem = navigationState?.item;
+  const shouldAutoplay = navigationState?.autoplay === true;
   const item = navItem || activeItem;
 
   const [parsedSubtitle, setParsedSubtitle] = useState<string>('');
@@ -70,32 +82,42 @@ export default function PlaybackPage() {
   }, [selectedPlayer, navigate]);
 
   useEffect(() => {
-    if (!trackTitle || tmdbSearch.title) return;
+    if (!trackTitle) return;
     const parsed = cleanMediaTitle(trackTitle);
+    const sameTitle = parsed.cleansedTitle === tmdbSearch.title;
+    const hasNewYear = parsed.year !== undefined && parsed.year !== tmdbSearch.year;
+    const hasNewTvHint = parsed.season !== undefined && tmdbSearch.isTvHint !== true;
+    if (sameTitle && !hasNewYear && !hasNewTvHint) return;
+
     setTmdbSearch({
       title: parsed.cleansedTitle,
       year: parsed.year,
-      isTvHint: parsed.season !== undefined,
+      isTvHint: parsed.season !== undefined ? true : undefined,
     });
-  }, [trackTitle, tmdbSearch.title]);
+    setParsedSubtitle(formatSubtitle(parsed.year, parsed.season, parsed.episode));
+  }, [trackTitle, tmdbSearch.title, tmdbSearch.year, tmdbSearch.isTvHint]);
 
   useEffect(() => {
     if (!selectedPlayer) return;
 
     if (!navItem) {
       if (activeItem) {
+        setTrackTitle(activeItem.title || '');
+        setTrackArtist(activeItem.artist || '');
+        setTrackAlbum(activeItem.album || '');
         const parsed = cleanMediaTitle(activeItem.title || '');
+        setParsedSubtitle(formatSubtitle(parsed.year, parsed.season, parsed.episode));
         setTmdbSearch({
           title: parsed.cleansedTitle,
           year: parsed.year,
-          isTvHint: parsed.season !== undefined,
+          isTvHint: parsed.season !== undefined ? true : undefined,
         });
       }
       return;
     }
 
-    if (isStartingRef.current) return;
-    isStartingRef.current = true;
+    // Router state survives an iOS tab reload, so consume this one-time play request.
+    navigate(location.pathname, { replace: true, state: null });
 
     setTrackTitle(navItem.title || '');
     setTrackArtist(navItem.artist || '');
@@ -106,8 +128,11 @@ export default function PlaybackPage() {
     setTmdbSearch({
       title: parsed.cleansedTitle,
       year: parsed.year,
-      isTvHint: parsed.season !== undefined,
+      isTvHint: parsed.season !== undefined ? true : undefined,
     });
+
+    if (!shouldAutoplay || isStartingRef.current) return;
+    isStartingRef.current = true;
 
     if (!navItem.resourceName) {
       setPlayerError('Media item has no playback URL');
@@ -115,6 +140,8 @@ export default function PlaybackPage() {
       return;
     }
 
+    setPlayingPending(true);
+    setPlayingPendingSince(Date.now());
     play(selectedPlayer.id, navItem.resourceName!, {
       title: cleanMediaTitle(navItem.title || '').cleansedTitle,
       artist: navItem.artist,
@@ -129,24 +156,37 @@ export default function PlaybackPage() {
       .catch(() => {
         setPlayerError('Failed to start playback');
         isStartingRef.current = false;
+        setPlayingPending(false);
       });
 
-    return () => {
-      if (selectedPlayer) {
-        stopApi(selectedPlayer.id).catch(() => {});
-      }
-    };
-  }, [navItem, selectedPlayer, activeItem]);
+  }, [navItem, shouldAutoplay, selectedPlayer, navigate, location.pathname]);
 
   const MAX_CONSECUTIVE_ERRORS = 3;
+  const PLAY_PENDING_TIMEOUT_MS = 15000;
 
   const pollStatus = useCallback(async () => {
-    if (!selectedPlayer) return;
+    if (!selectedPlayer || pollInFlightRef.current) return;
+    pollInFlightRef.current = true;
     try {
       const status = await getStatus(selectedPlayer.id);
       consecutiveErrorsRef.current = 0;
+      setPlaybackStatus(status);
       setIsPlaying(status.state === 'PLAYING');
-      setVolumeState(status.volume);
+      if (status.state === 'PLAYING') {
+        setPlayingPending(false);
+      }
+      const pendingTimedOut = playingPending &&
+        status.state !== 'PLAYING' &&
+        Date.now() - playingPendingSince > PLAY_PENDING_TIMEOUT_MS;
+      if (pendingTimedOut) {
+        setPlayingPending(false);
+        setPlayerError('Playback did not start');
+      } else {
+        setPlayerError(null);
+      }
+      if (typeof status.volume === 'number') {
+        setVolumeState(status.volume);
+      }
 
       if (!isScrubbingRef.current) {
         const pos = parseTime(status.trackPosition || '00:00:00');
@@ -157,18 +197,20 @@ export default function PlaybackPage() {
       }
 
       if (status.trackTitle) setTrackTitle(status.trackTitle);
-      setPlayerError(null);
       setReconnecting(false);
-    } catch (err) {
+    } catch {
       consecutiveErrorsRef.current += 1;
       setPlayerError('Player disconnected');
       setIsPlaying(false);
       setReconnecting(false);
       if (consecutiveErrorsRef.current >= MAX_CONSECUTIVE_ERRORS) {
+        setPlayingPending(false);
         navigate('/players');
       }
+    } finally {
+      pollInFlightRef.current = false;
     }
-  }, [selectedPlayer, setIsPlaying, setVolumeState, setCurrentTime, setDuration, navigate, setReconnecting]);
+  }, [selectedPlayer, setPlaybackStatus, setIsPlaying, setVolumeState, setCurrentTime, setDuration, setPlayingPending, playingPending, playingPendingSince, navigate, setReconnecting]);
 
   useEffect(() => {
     if (!selectedPlayer) return;
@@ -177,7 +219,7 @@ export default function PlaybackPage() {
       setReconnecting(true);
       pollStatus();
       consecutiveErrorsRef.current = 0;
-      const interval = isPlaying ? 1000 : 5000;
+      const interval = (isPlaying || playingPending) ? 1000 : 5000;
       pollIntervalRef.current = setInterval(pollStatus, interval);
     } else {
       if (pollIntervalRef.current) {
@@ -192,26 +234,37 @@ export default function PlaybackPage() {
         pollIntervalRef.current = null;
       }
     };
-  }, [selectedPlayer, isVisible, pollStatus, setReconnecting, isPlaying]);
+  }, [selectedPlayer, isVisible, pollStatus, setReconnecting, isPlaying, playingPending]);
 
   const handlePlayPause = async () => {
     if (!selectedPlayer) return;
     try {
       if (isPlaying) {
         await pause(selectedPlayer.id);
-      } else if (navItem?.resourceName) {
-        await play(selectedPlayer.id, navItem.resourceName, {
-          title: cleanMediaTitle(navItem.title || '').cleansedTitle,
-          artist: navItem.artist,
-          album: navItem.album,
-          duration: navItem.duration,
-          mimeType: navItem.mimeType,
-          protocolInfo: navItem.protocolInfo,
-        });
+        setIsPlaying(false);
+        if (playbackStatus) {
+          setPlaybackStatus({ ...playbackStatus, state: 'PAUSED_PLAYBACK' });
+        }
       } else {
-        await play(selectedPlayer.id, '');
+        setPlayingPending(true);
+        setPlayingPendingSince(Date.now());
+        if (playbackStatus?.state === 'PAUSED_PLAYBACK') {
+          await play(selectedPlayer.id, '');
+        } else if (navItem?.resourceName) {
+          await play(selectedPlayer.id, navItem.resourceName, {
+            title: cleanMediaTitle(navItem.title || '').cleansedTitle,
+            artist: navItem.artist,
+            album: navItem.album,
+            duration: navItem.duration,
+            mimeType: navItem.mimeType,
+            protocolInfo: navItem.protocolInfo,
+          });
+        } else {
+          await play(selectedPlayer.id, '');
+        }
       }
     } catch {
+      setPlayingPending(false);
       setPlayerError('Failed to control playback');
     }
   };
@@ -220,6 +273,11 @@ export default function PlaybackPage() {
     if (!selectedPlayer) return;
     try {
       await stopApi(selectedPlayer.id);
+      setIsPlaying(false);
+      setPlayingPending(false);
+      if (playbackStatus) {
+        setPlaybackStatus({ ...playbackStatus, state: 'STOPPED' });
+      }
       setCurrentTime(0);
     } catch {
       setPlayerError('Failed to stop playback');

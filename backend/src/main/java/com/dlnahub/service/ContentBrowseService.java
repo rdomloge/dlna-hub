@@ -321,6 +321,7 @@ public class ContentBrowseService {
             String resText = res.getTextContent();
             String resResolution = res.getAttribute("resolution");
             String resSize = res.getAttribute("size");
+            String resDuration = res.getAttribute("duration");
 
             boolean isThumb = proto != null && proto.contains("albumart");
 
@@ -332,6 +333,9 @@ public class ContentBrowseService {
                 mimeType = extractMimeType(proto);
                 protocolInfo = proto;
                 resourceName = resText;
+                if (resDuration != null && !resDuration.isEmpty()) {
+                    duration = resDuration;
+                }
                 if (resResolution != null && !resResolution.isEmpty()) {
                     resolution = resResolution;
                 }

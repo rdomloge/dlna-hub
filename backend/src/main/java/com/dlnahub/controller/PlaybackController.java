@@ -102,7 +102,12 @@ public class PlaybackController {
             trackPosition = "00:00:00";
             trackTitle = null;
         }
-        int volume = renderingControlService.getVolume(playerId);
+        Integer volume = null;
+        try {
+            volume = renderingControlService.getVolume(playerId);
+        } catch (Exception e) {
+            log.warn("GetVolume failed for player {}: {}", playerId, e.getMessage());
+        }
 
         PlaybackStatusDto dto = new PlaybackStatusDto();
         dto.setState(state);

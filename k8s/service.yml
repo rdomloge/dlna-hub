@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dlna-hub
+  namespace: dlna-hub
+  labels:
+    app: dlna-hub
+spec:
+  type: LoadBalancer
+  selector:
+    app: dlna-hub
+  ports:
+    - port: 9090
+      targetPort: 9201
+      protocol: TCP
+      name: http
