@@ -17,6 +17,7 @@ import { useVisibility } from '@/hooks/useVisibility';
 import { formatTime, parseTime } from '@/utils/formatTime';
 import { cleanMediaTitle, formatSubtitle } from '@/utils/cleanMediaTitle';
 import type { BrowsableItem } from '@/types/media';
+import TmdbMediaPanel from '@/components/TmdbMediaPanel';
 
 export default function PlaybackPage() {
   const navigate = useNavigate();
@@ -54,6 +55,11 @@ export default function PlaybackPage() {
   const item = navItem || activeItem;
 
   const [parsedSubtitle, setParsedSubtitle] = useState<string>('');
+  const [tmdbSearch, setTmdbSearch] = useState<{
+    title: string;
+    year?: string;
+    isTvHint?: boolean;
+  }>({ title: '' });
   const parsedTitle = useMemo(() => cleanMediaTitle(trackTitle), [trackTitle]);
 
   useEffect(() => {
@@ -64,7 +70,31 @@ export default function PlaybackPage() {
   }, [selectedPlayer, navigate]);
 
   useEffect(() => {
-    if (!navItem || !selectedPlayer || isStartingRef.current) return;
+    if (!trackTitle || tmdbSearch.title) return;
+    const parsed = cleanMediaTitle(trackTitle);
+    setTmdbSearch({
+      title: parsed.cleansedTitle,
+      year: parsed.year,
+      isTvHint: parsed.season !== undefined,
+    });
+  }, [trackTitle, tmdbSearch.title]);
+
+  useEffect(() => {
+    if (!selectedPlayer) return;
+
+    if (!navItem) {
+      if (activeItem) {
+        const parsed = cleanMediaTitle(activeItem.title || '');
+        setTmdbSearch({
+          title: parsed.cleansedTitle,
+          year: parsed.year,
+          isTvHint: parsed.season !== undefined,
+        });
+      }
+      return;
+    }
+
+    if (isStartingRef.current) return;
     isStartingRef.current = true;
 
     setTrackTitle(navItem.title || '');
@@ -73,6 +103,11 @@ export default function PlaybackPage() {
     setActiveItem(navItem);
     const parsed = cleanMediaTitle(navItem.title || '');
     setParsedSubtitle(formatSubtitle(parsed.year, parsed.season, parsed.episode));
+    setTmdbSearch({
+      title: parsed.cleansedTitle,
+      year: parsed.year,
+      isTvHint: parsed.season !== undefined,
+    });
 
     if (!navItem.resourceName) {
       setPlayerError('Media item has no playback URL');
@@ -87,10 +122,21 @@ export default function PlaybackPage() {
       duration: navItem.duration,
       mimeType: navItem.mimeType,
       protocolInfo: navItem.protocolInfo,
-    }).catch(() => {
-      setPlayerError('Failed to start playback');
-    });
-  }, [navItem, selectedPlayer]);
+    })
+      .then(() => {
+        isStartingRef.current = false;
+      })
+      .catch(() => {
+        setPlayerError('Failed to start playback');
+        isStartingRef.current = false;
+      });
+
+    return () => {
+      if (selectedPlayer) {
+        stopApi(selectedPlayer.id).catch(() => {});
+      }
+    };
+  }, [navItem, selectedPlayer, activeItem]);
 
   const MAX_CONSECUTIVE_ERRORS = 3;
 
@@ -131,7 +177,8 @@ export default function PlaybackPage() {
       setReconnecting(true);
       pollStatus();
       consecutiveErrorsRef.current = 0;
-      pollIntervalRef.current = setInterval(pollStatus, 1000);
+      const interval = isPlaying ? 1000 : 5000;
+      pollIntervalRef.current = setInterval(pollStatus, interval);
     } else {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -145,7 +192,7 @@ export default function PlaybackPage() {
         pollIntervalRef.current = null;
       }
     };
-  }, [selectedPlayer, isVisible, pollStatus, setReconnecting]);
+  }, [selectedPlayer, isVisible, pollStatus, setReconnecting, isPlaying]);
 
   const handlePlayPause = async () => {
     if (!selectedPlayer) return;
@@ -258,8 +305,8 @@ export default function PlaybackPage() {
           </div>
         )}
         {reconnecting && (
-          <div className="bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-3 rounded-lg mb-4 text-center animate-pulse">
-            Reconnecting...
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-gray-900 bg-opacity-70 text-white text-xs px-3 py-1.5 rounded-full">
+            Connecting
           </div>
         )}
         {playerError && (
@@ -268,7 +315,7 @@ export default function PlaybackPage() {
           </div>
         )}
 
-        <div className="bg-white rounded-lg shadow-sm p-6 space-y-6">
+        <div className={`bg-white rounded-lg shadow-sm p-6 space-y-6 transition-opacity ${reconnecting ? 'opacity-40 pointer-events-none' : ''}`}>
           <div className="text-center">
             {thumbnailUrl && (
               <img
@@ -427,6 +474,14 @@ export default function PlaybackPage() {
             </span>
           </div>
         </div>
+
+        <div className="mt-4">
+            <TmdbMediaPanel
+              title={tmdbSearch.title}
+              year={tmdbSearch.year}
+              isTvHint={tmdbSearch.isTvHint}
+            />
+          </div>
       </main>
     </div>
   );
