@@ -6,6 +6,7 @@ import com.dlnahub.dto.CrewMemberDto;
 import com.dlnahub.dto.TmdbMediaDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -33,12 +34,21 @@ public class TmdbService {
     private final TmdbConfig tmdbConfig;
     private final RestTemplate restTemplate;
 
+    @Autowired
     public TmdbService(TmdbConfig tmdbConfig) {
+        this(tmdbConfig, createRestTemplate());
+    }
+
+    TmdbService(TmdbConfig tmdbConfig, RestTemplate restTemplate) {
         this.tmdbConfig = tmdbConfig;
+        this.restTemplate = restTemplate;
+    }
+
+    private static RestTemplate createRestTemplate() {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(5000);
         factory.setReadTimeout(10000);
-        this.restTemplate = new RestTemplate(factory);
+        return new RestTemplate(factory);
     }
 
     public List<TmdbMediaDto> searchByTitle(String title, Integer yearHint, Boolean tvHint) {
@@ -50,14 +60,15 @@ public class TmdbService {
         log.info("Searching TMDB for title='{}', yearHint={}, tvHint={}", title, yearHint, tvHint);
 
         List<SearchCandidate> candidates = new ArrayList<>();
+        List<SearchCandidate> movieResults = List.of();
+        List<SearchCandidate> tvResults = List.of();
 
         boolean searchMovie = tvHint == null || !tvHint;
         boolean searchTv = tvHint == null || tvHint;
 
         if (searchMovie) {
             try {
-                List<SearchCandidate> movieResults = searchMovieCandidates(title);
-                candidates.addAll(movieResults);
+                movieResults = searchMovieCandidates(title, yearHint);
             } catch (Exception e) {
                 log.warn("Movie search failed: {}", e.getMessage());
             }
@@ -65,11 +76,18 @@ public class TmdbService {
 
         if (searchTv) {
             try {
-                List<SearchCandidate> tvResults = searchTvCandidates(title);
-                candidates.addAll(tvResults);
+                tvResults = searchTvCandidates(title, yearHint);
             } catch (Exception e) {
                 log.warn("TV search failed: {}", e.getMessage());
             }
+        }
+
+        if (tvHint == null) {
+            addInterleaved(candidates, movieResults, tvResults);
+        } else if (tvHint) {
+            candidates.addAll(tvResults);
+        } else {
+            candidates.addAll(movieResults);
         }
 
         if (candidates.isEmpty()) {
@@ -96,6 +114,19 @@ public class TmdbService {
         return results;
     }
 
+    private static <T> void addInterleaved(List<T> target, List<T> first, List<T> second) {
+        int index = 0;
+        while (index < first.size() || index < second.size()) {
+            if (index < first.size()) {
+                target.add(first.get(index));
+            }
+            if (index < second.size()) {
+                target.add(second.get(index));
+            }
+            index += 1;
+        }
+    }
+
     private Comparator<SearchCandidate> candidateComparator(Integer yearHint, Boolean tvHint) {
         return (a, b) -> {
             int aScore = scoreCandidate(a, yearHint, tvHint);
@@ -108,7 +139,7 @@ public class TmdbService {
         int score = 100;
 
         if (yearHint != null && c.year != null) {
-            if (yearHint == c.year) {
+            if (yearHint.equals(c.year)) {
                 score += 500;
             } else {
                 score -= 50;
@@ -127,9 +158,12 @@ public class TmdbService {
     }
 
     @SuppressWarnings("unchecked")
-    private List<SearchCandidate> searchMovieCandidates(String title) {
+    private List<SearchCandidate> searchMovieCandidates(String title, Integer yearHint) {
         String encodedTitle = URLEncoder.encode(title, StandardCharsets.UTF_8);
         String url = BASE_URL + "/search/movie?query=" + encodedTitle + "&language=en-US";
+        if (yearHint != null) {
+            url += "&year=" + yearHint;
+        }
         log.debug("Searching TMDB movies for: {}", title);
 
         Map<String, Object> response = callTmdb(url);
@@ -161,9 +195,12 @@ public class TmdbService {
     }
 
     @SuppressWarnings("unchecked")
-    private List<SearchCandidate> searchTvCandidates(String title) {
+    private List<SearchCandidate> searchTvCandidates(String title, Integer yearHint) {
         String encodedTitle = URLEncoder.encode(title, StandardCharsets.UTF_8);
         String url = BASE_URL + "/search/tv?query=" + encodedTitle + "&language=en-US";
+        if (yearHint != null) {
+            url += "&first_air_date_year=" + yearHint;
+        }
         log.debug("Searching TMDB TV shows for: {}", title);
 
         Map<String, Object> response = callTmdb(url);

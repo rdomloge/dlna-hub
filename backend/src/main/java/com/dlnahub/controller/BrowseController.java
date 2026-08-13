@@ -22,7 +22,7 @@ public class BrowseController {
 
     private static final Logger log = LoggerFactory.getLogger(BrowseController.class);
 
-    private static final String DEFAULT_FILTER = "dc:title,upnp:class,dc:date,dc:creator,res,dc:description,upnp:artist,upnp:album,upnp:genre,dlna:profileID,refID,protocolInfo";
+    private static final String DEFAULT_FILTER = "dc:title,upnp:class,dc:date,dc:creator,res,res@duration,res@resolution,res@size,dc:description,upnp:artist,upnp:album,upnp:genre,dlna:profileID,refID,protocolInfo";
 
     private final ContentBrowseService contentBrowseService;
     private final ThumbnailService thumbnailService;

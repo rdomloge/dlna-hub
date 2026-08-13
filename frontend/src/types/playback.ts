@@ -4,5 +4,5 @@ export interface PlaybackStatus {
   trackDuration?: string;
   trackPosition?: string;
   trackUri?: string;
-  volume: number;
+  volume?: number | null;
 }

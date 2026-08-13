@@ -33,7 +33,13 @@ export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
       selectedServer: null,
-      setSelectedServer: (server) => set({ selectedServer: server }),
+      setSelectedServer: (server) =>
+        set((state) => ({
+          selectedServer: server,
+          browseState: state.selectedServer?.id === server?.id
+            ? state.browseState
+            : defaultBrowseState,
+        })),
       selectedPlayer: null,
       setSelectedPlayer: (player) => set({ selectedPlayer: player }),
       servers: [],

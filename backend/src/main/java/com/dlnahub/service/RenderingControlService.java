@@ -22,7 +22,6 @@ public class RenderingControlService {
 
     private final PlaybackService playbackService;
     private final com.dlnahub.dlna.UpnpServiceManager upnpServiceManager;
-    private final java.util.Map<String, String> resolvedArgs = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Autowired
     public RenderingControlService(PlaybackService playbackService,
@@ -32,14 +31,9 @@ public class RenderingControlService {
     }
 
     private String resolveArgName(Action action, String standardName) {
-        String cacheKey = action.getName() + ":" + standardName;
-        String cached = resolvedArgs.get(cacheKey);
-        if (cached != null) return cached;
-
         for (ActionArgument arg : action.getInputArguments()) {
             String n = arg.getName();
             if (n.equals(standardName) || n.equals("A_" + standardName)) {
-                resolvedArgs.put(cacheKey, n);
                 log.debug("Resolved arg '{}' -> '{}' for {}", standardName, n, action.getName());
                 return n;
             }
@@ -47,12 +41,10 @@ public class RenderingControlService {
         for (ActionArgument arg : action.getOutputArguments()) {
             String n = arg.getName();
             if (n.equals(standardName) || n.equals("A_" + standardName)) {
-                resolvedArgs.put(cacheKey, n);
                 log.debug("Resolved arg '{}' -> '{}' for {}", standardName, n, action.getName());
                 return n;
             }
         }
-        resolvedArgs.put(cacheKey, standardName);
         return standardName;
     }
 

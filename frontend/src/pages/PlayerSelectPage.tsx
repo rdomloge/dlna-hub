@@ -4,13 +4,16 @@ import Header from '@/components/Header';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { getPlayers } from '@/api/players';
 import { useAppStore } from '@/store/useAppStore';
+import { usePlaybackStore } from '@/store/usePlaybackStore';
 import type { Renderer } from '@/types/player';
 
 export default function PlayerSelectPage() {
   const navigate = useNavigate();
   const selectedServer = useAppStore((s) => s.selectedServer);
+  const selectedPlayer = useAppStore((s) => s.selectedPlayer);
   const setPlayers = useAppStore((s) => s.setPlayers);
   const setSelectedPlayer = useAppStore((s) => s.setSelectedPlayer);
+  const resetPlayback = usePlaybackStore((s) => s.reset);
   const [players, setLocalPlayers] = useState<Renderer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +46,9 @@ export default function PlayerSelectPage() {
   }, [fetchPlayers, selectedServer]);
 
   const handleSelect = (player: Renderer) => {
+    if (selectedPlayer?.id !== player.id) {
+      resetPlayback();
+    }
     setSelectedPlayer(player);
     navigate('/browse');
   };
