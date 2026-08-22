@@ -97,6 +97,44 @@ public class ContentBrowseService {
         return new BrowseResult(items, totalMatches, index, count, updateIdValue);
     }
 
+    private BrowseResult browseInternal(String serverId, String objectId, int index, int count,
+                                         String filter, String sortBy) {
+        RemoteDevice device = serverBrowseService.getDevice(serverId);
+        if (device == null) {
+            throw new IllegalArgumentException("Server not found: " + serverId);
+        }
+
+        RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
+        if (contentDir == null) {
+            throw new IllegalStateException("ContentDirectory service not found on server: " + serverId);
+        }
+
+        Action browseAction = contentDir.getAction("Browse");
+        if (browseAction == null) {
+            throw new IllegalStateException("Browse action not found on ContentDirectory service");
+        }
+
+        ActionInvocation invocation = new ActionInvocation(browseAction);
+        invocation.setInput("objectID", objectId);
+        invocation.setInput("browseFlag", "BrowseDirectChildren");
+        invocation.setInput("Filter", filter != null ? filter : "");
+        invocation.setInput("StartingIndex", String.valueOf(index));
+        invocation.setInput("RequestedCount", String.valueOf(count));
+        invocation.setInput("SortCriteria", sortBy != null ? sortBy : "");
+
+        executeSync(invocation);
+
+        String resultXml = getOutputString(invocation, "Result");
+        String totalMatchesStr = getOutputString(invocation, "TotalMatches");
+        String updateIdValue = getOutputString(invocation, "UpdateID");
+
+        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+
+        List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
+
+        return new BrowseResult(items, totalMatches, index, count, updateIdValue);
+    }
+
     public BrowseResult search(String serverId, String containerId, String query, int index, int count,
                                 String filter, String sortBy) {
         if (query == null || query.trim().isEmpty()) {
@@ -160,7 +198,7 @@ public class ContentBrowseService {
         int pageSize = 500;
 
         while (true) {
-            BrowseResult page = browse(serverId, containerId, startIdx, pageSize, filter, sortBy);
+            BrowseResult page = browseInternal(serverId, containerId, startIdx, pageSize, filter, sortBy);
             allItems.addAll(page.getItems());
             if (page.getItems().size() < pageSize) {
                 break;
@@ -241,13 +279,18 @@ public class ContentBrowseService {
     }
 
     private void executeSync(ActionInvocation invocation) {
-        ControlPoint controlPoint = upnpServiceManager.getUpnpService().getControlPoint();
-        new ActionCallback.Default(invocation, controlPoint).run();
+        ActionCallback callback = createCallback(invocation);
+        callback.run();
 
         ActionException failure = invocation.getFailure();
         if (failure != null) {
             throw new RuntimeException("DLNA Browse action failed: " + failure.getMessage(), failure);
         }
+    }
+
+    protected ActionCallback createCallback(ActionInvocation invocation) {
+        ControlPoint controlPoint = upnpServiceManager.getUpnpService().getControlPoint();
+        return new ActionCallback.Default(invocation, controlPoint);
     }
 
     private String getOutputString(ActionInvocation invocation, String name) {
@@ -258,6 +301,13 @@ public class ContentBrowseService {
         return value.toString();
     }
 
+    private String preprocessMalformedXml(String xml) {
+        if (xml == null) return null;
+        String cleaned = xml.replaceAll("xmlns:\\w*=\"\"", "");
+        log.debug("Preprocessed XML, removed empty namespace declarations");
+        return cleaned;
+    }
+
     private List<BrowsableItem> parseBrowseResult(String xml, String serverId) {
         List<BrowsableItem> items = new ArrayList<>();
 
@@ -266,6 +316,7 @@ public class ContentBrowseService {
         }
 
         try {
+            xml = preprocessMalformedXml(xml);
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setNamespaceAware(true);
             DocumentBuilder builder = factory.newDocumentBuilder();

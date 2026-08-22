@@ -34,6 +34,9 @@ package-lock.json
 ## Logs
 *.log
 
+## Vendor
+jupnp/
+
 ## Env
 .env
 .env.local

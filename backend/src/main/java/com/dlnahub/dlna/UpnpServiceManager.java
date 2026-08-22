@@ -67,6 +67,11 @@ public class UpnpServiceManager {
                 public ServiceDescriptorBinder getServiceDescriptorBinderUDA10() {
                     return new UDA10ServiceDescriptorBinderSAXImpl();
                 }
+
+                @Override
+                public Integer getRemoteDeviceMaxAgeSeconds() {
+                    return config.getRemoteDeviceMaxAgeSeconds();
+                }
             };
             upnpService = new UpnpServiceImpl(upnpConfig);
             upnpService.startup();
@@ -266,7 +271,7 @@ public class UpnpServiceManager {
             @Override
             public void remoteDeviceAdded(Registry registry, RemoteDevice device) {
                 UpnpServiceManager.this.deviceAdded(device);
-                log.debug(
+                log.info(
                     "UPnP device registered: {} [type: {}, descriptor: {}]",
                     device.getDisplayString(),
                     device.getType(),
@@ -276,6 +281,7 @@ public class UpnpServiceManager {
 
             @Override
             public void remoteDeviceRemoved(Registry registry, RemoteDevice device) {
+                log.info("UPnP device removed: {}", device.getDisplayString());
                 discoveryManager.deviceRemoved(device);
                 rendererDiscoveryManager.deviceRemoved(device);
             }

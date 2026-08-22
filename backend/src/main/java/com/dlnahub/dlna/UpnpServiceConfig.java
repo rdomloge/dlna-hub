@@ -12,6 +12,7 @@ public class UpnpServiceConfig {
 
     private String networkInterface;
     private int discoveryTimeout;
+    private int remoteDeviceMaxAgeSeconds = 90;
     private List<StaticDevice> staticDevices = new ArrayList<>();
 
     public String getNetworkInterface() {
@@ -28,6 +29,14 @@ public class UpnpServiceConfig {
 
     public void setDiscoveryTimeout(int discoveryTimeout) {
         this.discoveryTimeout = discoveryTimeout;
+    }
+
+    public int getRemoteDeviceMaxAgeSeconds() {
+        return remoteDeviceMaxAgeSeconds;
+    }
+
+    public void setRemoteDeviceMaxAgeSeconds(int remoteDeviceMaxAgeSeconds) {
+        this.remoteDeviceMaxAgeSeconds = remoteDeviceMaxAgeSeconds;
     }
 
     public List<StaticDevice> getStaticDevices() {

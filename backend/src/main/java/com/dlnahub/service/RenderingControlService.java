@@ -75,7 +75,9 @@ public class RenderingControlService {
         String volumeStr = getOutput(invocation, action, "CurrentVolume");
         if (volumeStr == null) return 0;
         try {
-            return Integer.parseInt(volumeStr);
+            int volume = Integer.parseInt(volumeStr);
+            log.debug("GetVolume for player {}: {}", playerId, volume);
+            return volume;
         } catch (NumberFormatException e) {
             log.warn("Failed to parse volume value: {}", volumeStr);
             return 0;
