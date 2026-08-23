@@ -6,6 +6,10 @@ dlna:
   discovery-timeout: 5000
   discovery-interval: ${DISCOVERY_INTERVAL:60000}
   static-device-check-interval: ${STATIC_DEVICE_CHECK_INTERVAL:5000}
+  # Seconds a discovered device stays in the list after its last SSDP heartbeat or search
+  # response. Live devices keep refreshing their timestamp, so devices that leave the
+  # network drop out quickly. Keep this above discovery-interval / 1000.
+  remote-device-max-age-seconds: ${REMOTE_DEVICE_MAX_AGE_SECONDS:90}
   # Optional fallback for devices that Windows AppContainer isolation hides from local SSDP.
   static-devices:
     - udn: ${STATIC_RENDERER_UDN:5ae95e81-4e22-43dc-bdde-50adad44df6e}

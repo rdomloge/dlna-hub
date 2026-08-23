@@ -30,7 +30,7 @@ https://www.jupnp.org/docs/creating-services
 https://www.jupnp.org/docs/advanced
 
 ...and the JavaDoc at https://www.javadoc.io/doc/org.jupnp/org.jupnp
-Don't guess how it's used and don't try decompiling the code - work from the docs.
+Don't guess how it's used and don't try decompiling the code - work from the docs or the clone of the repo in ./jupnp
 
 ## API Endpoints (all under `/api`)
 

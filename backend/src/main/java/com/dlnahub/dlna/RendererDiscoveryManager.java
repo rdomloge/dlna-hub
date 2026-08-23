@@ -42,8 +42,10 @@ public class RendererDiscoveryManager {
 
     private void processDevice(RemoteDevice device) {
         if (!isMediaRenderer(device)) {
+            log.debug("Skipping non-media-renderer device: {}", device.getDisplayString());
             return;
         }
+        log.info("Processing media renderer device: {}", device.getDisplayString());
         try {
             String identifier = device.getIdentity().getUdn().getIdentifierString();
             UUID id = UUID.nameUUIDFromBytes(identifier.getBytes(StandardCharsets.UTF_8));
@@ -73,6 +75,8 @@ public class RendererDiscoveryManager {
 
             List<String> supportedProtocols = extractProtocols(device);
             Set<String> transportCapabilities = extractTransportCapabilities(device);
+            log.info("Renderer {} capabilities: AVTransport actions={}, protocols={}",
+                friendlyName, transportCapabilities, supportedProtocols);
 
             devicesById.put(id.toString(), device);
 
