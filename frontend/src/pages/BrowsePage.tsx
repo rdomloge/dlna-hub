@@ -5,6 +5,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import { browse as browseApi, search as searchApi, type SortOption } from '@/api/browse';
 import { useAppStore } from '@/store/useAppStore';
 import type { BrowsableItem } from '@/types/media';
+import { mediaDateLabel } from '@/utils/formatDate';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -399,6 +400,7 @@ export default function BrowsePage() {
             <ul className="space-y-2">
               {items.map((item) => {
                 const type = mediaType(item.mimeType);
+                const dateLabel = item.isContainer ? mediaDateLabel(item) : null;
                 return (
                   <li key={item.id}>
                     <button
@@ -440,7 +442,7 @@ export default function BrowsePage() {
                         <p className="font-medium text-gray-900 truncate">
                           {item.title}
                         </p>
-                        {!item.isContainer && (
+                        {!item.isContainer ? (
                           <div className="flex items-center gap-2 mt-0.5">
                             <span className="text-xs px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded">
                               {typeLabel(type)}
@@ -451,6 +453,14 @@ export default function BrowsePage() {
                               </span>
                             )}
                           </div>
+                        ) : (
+                          dateLabel && (
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-xs text-gray-400">
+                                Latest: {dateLabel}
+                              </span>
+                            </div>
+                          )
                         )}
                       </div>
                     </button>
