@@ -1,0 +1,7 @@
+target/
+.git/
+.gitignore
+*.md
+.idea/
+*.iml
+**/node_modules/

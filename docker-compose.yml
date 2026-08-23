@@ -1,7 +1,0 @@
-services:
-  dlna-hub:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - NETWORK_INTERFACE=eth0

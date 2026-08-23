@@ -119,8 +119,58 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 - `RenderingControlService` - Volume control (RenderingControl)
 - `UpnpServiceManager` - jUpnp lifecycle management
 
+## Deployment — Kubernetes (Production)
+
+Docker and kubectl are available on this machine.
+
+The solution runs as a single pod with 2 containers in the `dlna-hub` namespace on a K3s cluster.
+
+- **`hostNetwork: true`** — Required for DLNA/SSDP UDP multicast to work
+- **`dnsPolicy: ClusterFirstWithHostNet`** — Retains cluster DNS despite host network
+- **Backend** (`rdomloge/dlna-hub-backend:latest`): Spring Boot on **port 9200** (overridden via `SERVER_PORT=9200`, default 9100)
+- **Frontend** (`rdomloge/dlna-hub-frontend:latest`): Nginx on **port 9201**, proxies `/api` → `127.0.0.1:9200`
+- **LoadBalancer service**: port **9090** → frontend 9201, accessible on any K3s node IP
+- **Secrets**: `dlna-hub-secret` with `TMDB_API_KEY` and `TMDB_API_READ_ACCESS_TOKEN`
+
+### kubeconfig
+
+kubectl requires an explicit `--kubeconfig` flag on this machine:
+
+```bash
+kubectl --kubeconfig 'C:\Users\Ramsay Domloge\k3s.yaml'
+```
+
+### Before building — test locally first
+
+**ALWAYS test changes locally against the Synology NAS before building Docker images or pushing to the registry.**
+
+1. Start the backend: `cd backend && mvn spring-boot:run`
+2. Verify the fix works: send HTTP requests to `http://localhost:9100/api/servers/<id>/browse?sortBy=...` and check results
+3. Run unit tests: `cd backend && mvn test`
+4. Only after local verification passes — build, push, and deploy
+
+This prevents pushing broken images to the cluster.
+
+### Building and pushing images
+
+```bash
+cd C:\repos\dlna-hub
+docker buildx build --platform linux/amd64,linux/arm64 -f backend/Dockerfile -t rdomloge/dlna-hub-backend:latest --push .
+docker buildx build --platform linux/amd64,linux/arm64 -f frontend/Dockerfile -t rdomloge/dlna-hub-frontend:latest --push .
+kubectl --kubeconfig 'C:\Users\Ramsay Domloge\k3s.yaml' rollout restart deployment/dlna-hub -n dlna-hub
+```
+
+### K8s manifests
+
+| File | Purpose |
+|------|---------|
+| `k8s/deployment.yml` | Deployment — 2 containers (backend + frontend), probes, resource limits |
+| `k8s/service.yml` | LoadBalancer — port 9090 → frontend 9201 |
+| `k8s/secret.yml` | TMDB credentials |
+
 ## Stages
 - Documented in `PLAN.md` and `stage-N.md` files
 - Complete sequentially (1-8)
 - **Stage 7 complete**: All pages implemented with real API integration
-- **Next**: Stage 8 (Docker build & compose)
+- **Stage 8 complete**: Kubernetes deployment (backend + frontend images on Docker Hub)
+- **Production port**: 9200 (backend), 9201 (frontend), 9090 (external LoadBalancer)

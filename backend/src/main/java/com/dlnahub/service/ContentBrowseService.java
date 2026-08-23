@@ -9,6 +9,7 @@ import org.jupnp.model.action.ActionArgumentValue;
 import org.jupnp.model.action.ActionException;
 import org.jupnp.model.action.ActionInvocation;
 import org.jupnp.model.meta.Action;
+import org.jupnp.model.meta.ActionArgument;
 import org.jupnp.model.meta.RemoteDevice;
 import org.jupnp.model.meta.RemoteService;
 import org.jupnp.model.types.UDAServiceType;
@@ -25,9 +26,19 @@ import javax.xml.xpath.XPathFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.DateTimeException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 @Service
 public class ContentBrowseService {
@@ -44,6 +55,12 @@ public class ContentBrowseService {
     private final ThumbnailService thumbnailService;
     private final UpnpServiceManager upnpServiceManager;
 
+    /**
+     * Cached result of the GetSortCapabilities probe, keyed by server id: whether the server
+     * actually sorts on its side. Only successful probes are cached; failed probes are retried.
+     */
+    private final Map<String, Boolean> serverSortSupport = new ConcurrentHashMap<>();
+
     @Autowired
     public ContentBrowseService(ServerBrowseService serverBrowseService,
                                  ThumbnailService thumbnailService,
@@ -55,6 +72,15 @@ public class ContentBrowseService {
 
     public BrowseResult browse(String serverId, String objectId, int index, int count,
                                String filter, String sortBy) {
+        boolean clientSort = needsClientSort(sortBy) && !supportsServerSort(serverId);
+        if (clientSort) {
+            // Server does not sort on its side (e.g. Synology silently ignores SortCriteria) —
+            // we fetch the whole container, sort in memory and page locally. See sortItems().
+            String effectiveFilter = sortBy.contains("dc:date") ? ensureFilterField(filter, "dc:date") : filter;
+            List<BrowsableItem> all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
+            sortItems(all, sortBy);
+            return pagedResult(serverId, all, index, count);
+        }
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
             throw new IllegalArgumentException("Server not found: " + serverId);
@@ -153,21 +179,41 @@ public class ContentBrowseService {
 
         Action searchAction = contentDir.getAction("Search");
         if (searchAction != null) {
-            return searchViaAction(serverId, contentDir, containerId, query, index, count, filter, sortBy);
+            try {
+                if (needsClientSort(sortBy) && !supportsServerSort(serverId)) {
+                    List<BrowsableItem> all = fetchAllSearchResults(serverId, contentDir, containerId, query, filter, sortBy);
+                    sortItems(all, sortBy);
+                    return pagedResult(serverId, all, index, count);
+                }
+                return searchViaAction(serverId, contentDir, containerId, query, index, count, filter, sortBy);
+            } catch (RuntimeException e) {
+                // e.g. Synology declares Search in its SCPD but answers with UPnP error 501
+                log.warn("Search action failed on {} ({}), falling back to in-memory search",
+                        serverId, e.getMessage());
+            }
+        } else {
+            log.info("Search action not available on {}, falling back to in-memory search", serverId);
         }
-
-        log.info("Search action not available on {}, falling back to in-memory search", serverId);
         return searchInMemory(serverId, containerId, query, index, count, filter, sortBy);
     }
 
     private BrowseResult searchViaAction(String serverId, RemoteService contentDir, String containerId,
                                           String query, int index, int count, String filter, String sortBy) {
-        String searchCriteria = buildSearchCriteria(query);
+        BrowseResult page = searchPage(serverId, contentDir, containerId, query, index, count, filter, sortBy);
+        for (BrowsableItem item : page.getItems()) {
+            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
+                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
+            }
+        }
+        return page;
+    }
 
+    private BrowseResult searchPage(String serverId, RemoteService contentDir, String containerId,
+                                     String query, int index, int count, String filter, String sortBy) {
         Action searchAction = contentDir.getAction("Search");
         ActionInvocation invocation = new ActionInvocation(searchAction);
         invocation.setInput("containerID", containerId);
-        invocation.setInput("searchCriteria", searchCriteria);
+        invocation.setInput("searchCriteria", buildSearchCriteria(query));
         invocation.setInput("Filter", filter != null ? filter : "");
         invocation.setInput("StartingIndex", String.valueOf(index));
         invocation.setInput("RequestedCount", String.valueOf(count));
@@ -180,15 +226,7 @@ public class ContentBrowseService {
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
         int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
-        List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
-
-        for (BrowsableItem item : items) {
-            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
-                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
-            }
-        }
-
-        return new BrowseResult(items, totalMatches, index, count, updateIdValue);
+        return new BrowseResult(parseBrowseResult(resultXml, serverId), totalMatches, index, count, updateIdValue);
     }
 
     private BrowseResult searchInMemory(String serverId, String containerId, String query, int index, int count,
@@ -220,6 +258,10 @@ public class ContentBrowseService {
                 })
                 .collect(java.util.stream.Collectors.toList());
 
+        if (needsClientSort(sortBy)) {
+            sortItems(matching, sortBy);
+        }
+
         int total = matching.size();
         int from = Math.min(index, total);
         int to = Math.min(from + count, total);
@@ -238,6 +280,274 @@ public class ContentBrowseService {
         String escaped = query.replace("\\", "\\\\").replace("'", "\\'");
         return "(dc:title contains '" + escaped + "' OR dc:creator contains '" + escaped
                 + "' OR upnp:album contains '" + escaped + "')";
+    }
+
+    /* ##################################################################################################### */
+    /* Client-side sorting                                                                                 */
+    /* Some DLNA servers (notably Synology) silently ignore SortCriteria: GetSortCapabilities returns      */
+    /* empty and item order never changes regardless of the requested sort. When a sort is requested we   */
+    /* therefore fetch the whole container (or search result set), sort it in memory and page it locally. */
+    /* ##################################################################################################### */
+
+    private static boolean needsClientSort(String sortBy) {
+        return sortBy != null && !sortBy.isEmpty();
+    }
+
+    /**
+     * Asks the server (once, cached) whether it sorts on its own side via GetSortCapabilities.
+     * Servers that return an empty capability list (e.g. Synology) silently ignore SortCriteria,
+     * so for those we sort in memory instead. Failed probes are not cached and are retried next
+     * time, degrading to client-side sorting in the meantime.
+     */
+    private boolean supportsServerSort(String serverId) {
+        Boolean cached = serverSortSupport.get(serverId);
+        if (cached != null) {
+            return cached;
+        }
+        Boolean result = probeSortSupport(serverId);
+        if (result != null) {
+            serverSortSupport.put(serverId, result);
+        }
+        return result != null ? result : false;
+    }
+
+    /**
+     * Calls GetSortCapabilities on the server's ContentDirectory service via raw SOAP.
+     * @return true if the server reports sort capabilities, false if the list is empty, null on failure.
+     */
+    private Boolean probeSortSupport(String serverId) {
+        try {
+            RemoteDevice device = serverBrowseService.getDevice(serverId);
+            if (device == null) return null;
+            RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
+            if (contentDir == null) return null;
+
+            // Build full URL from device descriptor location + relative control URI
+            String deviceLocation = device.getIdentity().getDescriptorURL() != null
+                    ? device.getIdentity().getDescriptorURL().toString() : null;
+            String controlUri = contentDir.getControlURI().toString();
+            String controlUrl;
+            if (deviceLocation != null && controlUri.startsWith("/")) {
+                try {
+                    controlUrl = new java.net.URL(new java.net.URL(deviceLocation), controlUri).toString();
+                } catch (Exception e) {
+                    log.warn("Could not build full control URL for {}: {}; probe skipped", serverId, e.getMessage());
+                    return null;
+                }
+            } else {
+                controlUrl = controlUri;
+            }
+
+            String soapEnvelope = String.join("\n",
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+                    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">",
+                    "  <s:Body>",
+                    "    <u:GetSortCapabilities xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"></u:GetSortCapabilities>",
+                    "  </s:Body>",
+                    "</s:Envelope>"
+            );
+
+            java.net.URL url = new java.net.URL(controlUrl);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
+            conn.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:ContentDirectory:1#GetSortCapabilities\"");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(soapEnvelope.getBytes("UTF-8"));
+
+            int status = conn.getResponseCode();
+            String responseBody;
+            if (status >= 200 && status < 300) {
+                responseBody = new String(conn.getInputStream().readNBytes(8192), "UTF-8");
+            } else {
+                log.warn("GetSortCapabilities returned HTTP {}: {}", status, controlUrl);
+                return null;
+            }
+            conn.disconnect();
+
+            boolean supported = parseSortCaps(responseBody);
+            log.info("Server {} {} SortCriteria (GetSortCapabilities={})",
+                    serverId, supported ? "supports" : "does not support", supported ? "non-empty" : "<empty>");
+            return supported;
+        } catch (Exception e) {
+            log.warn("GetSortCapabilities probe failed for server {}: {}; assuming no server-side sort",
+                    serverId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Parses the GetSortCapabilities SOAP response to determine if the server reports sort capabilities.
+     * The response contains a <SortCaps> element — if empty or absent, the server does not support sorting.
+     */
+    private static boolean parseSortCaps(String responseBody) {
+        if (responseBody == null || responseBody.trim().isEmpty()) return false;
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(false);
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document doc = builder.parse(new java.io.ByteArrayInputStream(responseBody.getBytes("UTF-8")));
+
+            // Look for SortCaps anywhere in the response (namespace-agnostic)
+            NodeList all = doc.getElementsByTagName("SortCaps");
+            if (all.getLength() == 0) return false;
+            String caps = all.item(0).getTextContent();
+            return caps != null && !caps.trim().isEmpty();
+        } catch (Exception e) {
+            log.warn("Failed to parse GetSortCapabilities response: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private static String ensureFilterField(String filter, String field) {
+        if (filter == null || filter.trim().isEmpty() || "*".equals(filter.trim()) || filter.contains(field)) {
+            return filter;
+        }
+        return filter + "," + field;
+    }
+
+    private List<BrowsableItem> fetchAllChildren(String serverId, String objectId, String filter, String sortBy) {
+        List<BrowsableItem> all = new ArrayList<>();
+        final int pageSize = 500;
+        int start = 0;
+        while (true) {
+            BrowseResult page = browseInternal(serverId, objectId, start, pageSize, filter, sortBy);
+            all.addAll(page.getItems());
+            if (page.getItems().size() < pageSize) {
+                break;
+            }
+            start += page.getItems().size();
+            if (start > 50000) {
+                log.warn("Client-side sort exceeded item limit for server={}, container={}", serverId, objectId);
+                break;
+            }
+        }
+        return all;
+    }
+
+    private List<BrowsableItem> fetchAllSearchResults(String serverId, RemoteService contentDir, String containerId,
+                                                       String query, String filter, String sortBy) {
+        List<BrowsableItem> all = new ArrayList<>();
+        final int pageSize = 500;
+        int start = 0;
+        while (true) {
+            BrowseResult page = searchPage(serverId, contentDir, containerId, query, start, pageSize, filter, sortBy);
+            all.addAll(page.getItems());
+            if (page.getItems().isEmpty()) {
+                break;
+            }
+            if (page.getTotal() > 0 && all.size() >= page.getTotal()) {
+                break;
+            }
+            start += page.getItems().size();
+            if (start > 50000) {
+                log.warn("Client-side sort exceeded item limit for server={}, query={}", serverId, query);
+                break;
+            }
+        }
+        return all;
+    }
+
+    private BrowseResult pagedResult(String serverId, List<BrowsableItem> all, int index, int count) {
+        int total = all.size();
+        int from = Math.max(0, Math.min(index, total));
+        int to = Math.max(from, Math.min(from + count, total));
+        List<BrowsableItem> page = new ArrayList<>(all.subList(from, to));
+        for (BrowsableItem item : page) {
+            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
+                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
+            }
+        }
+        return new BrowseResult(page, total, index, count, "");
+    }
+
+    /**
+     * Sorts items in place by the given UPnP sort criterion (dc:title, dc:creator, dc:date,
+     * optionally negated with a leading '-'). Containers are kept before items; entries with
+     * missing values are placed last regardless of direction. Unknown criteria fall back to title.
+     */
+    static void sortItems(List<BrowsableItem> items, String sortBy) {
+        if (items == null || items.isEmpty() || sortBy == null || sortBy.isEmpty()) {
+            return;
+        }
+        boolean desc = sortBy.startsWith("-");
+        String field = desc ? sortBy.substring(1) : sortBy;
+
+        Comparator<BrowsableItem> byField;
+        boolean containersFirst = "dc:title".equals(field);
+        switch (field) {
+            case "dc:creator":
+                byField = stringKeyComparator(BrowsableItem::getArtist, desc);
+                break;
+            case "dc:date":
+                byField = dateComparator(desc);
+                break;
+            case "dc:title":
+            default:
+                byField = stringKeyComparator(BrowsableItem::getTitle, desc);
+                break;
+        }
+        if (containersFirst) {
+            items.sort(Comparator.comparing(BrowsableItem::isContainer, Comparator.reverseOrder()).thenComparing(byField));
+        } else {
+            items.sort(byField);
+        }
+    }
+
+    private static Comparator<BrowsableItem> stringKeyComparator(Function<BrowsableItem, String> key, boolean desc) {
+        return (a, b) -> {
+            String va = key.apply(a);
+            String vb = key.apply(b);
+            if (va == null && vb == null) return 0;
+            if (va == null) return 1;
+            if (vb == null) return -1;
+            // Compare with operands swapped for descending, preserving nulls-last
+            return desc
+                    ? String.CASE_INSENSITIVE_ORDER.compare(vb, va)
+                    : String.CASE_INSENSITIVE_ORDER.compare(va, vb);
+        };
+    }
+
+    private static Comparator<BrowsableItem> dateComparator(boolean desc) {
+        return (a, b) -> {
+            Instant da = parseDateInstant(a.getDate());
+            Instant db = parseDateInstant(b.getDate());
+            if (da == null && db == null) return 0;
+            if (da == null) return 1;
+            if (db == null) return -1;
+            // Swap operands instead of negating, so nulls-last is preserved for both directions
+            int c = desc ? db.compareTo(da) : da.compareTo(db);
+            return c;
+        };
+    }
+
+    /**
+     * Parses the date formats DLNA servers emit for dc:date (W3C datetime with or without
+     * timezone, without seconds, or plain dates). Naive values are interpreted as UTC.
+     * Returns null if the value is missing or unparseable.
+     */
+    static Instant parseDateInstant(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        if (v.isEmpty()) return null;
+        try {
+            return OffsetDateTime.parse(v).toInstant();
+        } catch (DateTimeException e) {
+            // fall through
+        }
+        try {
+            return LocalDateTime.parse(v).toInstant(ZoneOffset.UTC);
+        } catch (DateTimeException e) {
+            // fall through
+        }
+        try {
+            return LocalDate.parse(v).atStartOfDay(ZoneOffset.UTC).toInstant();
+        } catch (DateTimeException e) {
+            // fall through
+        }
+        return null;
     }
 
     public List<BrowsableItem> browseMetadata(String serverId, String itemId, String filter) {
