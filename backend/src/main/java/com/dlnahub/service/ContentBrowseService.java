@@ -458,9 +458,7 @@ public class ContentBrowseService {
     private static boolean parseSortCaps(String responseBody) {
         if (responseBody == null || responseBody.trim().isEmpty()) return false;
         try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
+            DocumentBuilder builder = secureDocumentBuilderFactory(false).newDocumentBuilder();
             Document doc = builder.parse(new java.io.ByteArrayInputStream(responseBody.getBytes("UTF-8")));
 
             // Look for SortCaps anywhere in the response (namespace-agnostic)
@@ -924,13 +922,13 @@ public class ContentBrowseService {
 
         try {
             xml = preprocessMalformedXml(xml);
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(true);
-            DocumentBuilder builder = factory.newDocumentBuilder();
+            DocumentBuilder builder = secureDocumentBuilderFactory(true).newDocumentBuilder();
             Document doc = builder.parse(new java.io.ByteArrayInputStream(xml.getBytes("UTF-8")));
             doc.getDocumentElement().normalize();
 
-            XPath xpath = XPathFactory.newInstance().newXPath();
+            XPathFactory xpathFactory = XPathFactory.newInstance();
+            xpathFactory.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            XPath xpath = xpathFactory.newXPath();
             NodeList nodeList = (NodeList) xpath.evaluate(
                     "//*[local-name()='item' or local-name()='container']",
                     doc.getDocumentElement(),
@@ -1051,5 +1049,22 @@ public class ContentBrowseService {
             return contentFormat.isEmpty() || "*".equals(contentFormat) ? null : contentFormat;
         }
         return null;
+    }
+
+    /**
+     * A DocumentBuilderFactory with DTDs and external entities disabled. DIDL-Lite and SOAP
+     * responses come from arbitrary devices on the local network, so they are untrusted input.
+     * Mirrors the hardening already applied in DidlUtils.extractTitleFromMetadata.
+     */
+    private static DocumentBuilderFactory secureDocumentBuilderFactory(boolean namespaceAware)
+            throws javax.xml.parsers.ParserConfigurationException {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(namespaceAware);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        return factory;
     }
 }
