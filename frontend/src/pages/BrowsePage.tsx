@@ -92,8 +92,10 @@ export default function BrowsePage() {
         }
         if (requestId !== latestRequestRef.current) return;
         isSearchingRef.current = searching;
+        const received = index + result.items.length;
         setItems((prev) => (index === 0 ? result.items : [...prev, ...result.items]));
-        setHasMore(index + result.count < result.total);
+        setHasMore(result.items.length > 0 && received < result.total);
+        setError(null);
       } catch (err: any) {
         if (requestId !== latestRequestRef.current) return;
         setError(err.message || 'Failed to load content');
