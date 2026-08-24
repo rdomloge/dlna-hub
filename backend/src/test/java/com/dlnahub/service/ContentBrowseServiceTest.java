@@ -286,4 +286,21 @@ class ContentBrowseServiceTest {
         assertFalse(ContentBrowseService.isDateSort(null));
         assertFalse(ContentBrowseService.isDateSort(""));
     }
+
+    @Test
+    void extractsContentFormatFromProtocolInfo() {
+        assertEquals("video/x-matroska",
+                ContentBrowseService.extractMimeType("http-get:*:video/x-matroska:DLNA.ORG_PN=AVC_MKV"));
+        assertEquals("audio/mpeg",
+                ContentBrowseService.extractMimeType("http-get:*:audio/mpeg:*"));
+        assertEquals("image/jpeg",
+                ContentBrowseService.extractMimeType("http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN"));
+    }
+
+    @Test
+    void extractMimeTypeReturnsNullForUnusableProtocolInfo() {
+        assertNull(ContentBrowseService.extractMimeType(null));
+        assertNull(ContentBrowseService.extractMimeType("http-get:*"));
+        assertNull(ContentBrowseService.extractMimeType("http-get:*:*:*"));
+    }
 }

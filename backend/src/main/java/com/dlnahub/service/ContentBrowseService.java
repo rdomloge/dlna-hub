@@ -1039,11 +1039,18 @@ public class ContentBrowseService {
         return false;
     }
 
-    private String extractMimeType(String protocolInfo) {
+    /**
+     * Extracts the content format (MIME type) from a DLNA protocolInfo string, which has the
+     * shape {@code <protocol>:<network>:<contentFormat>:<additionalInfo>} — e.g.
+     * {@code http-get:*:video/x-matroska:DLNA.ORG_PN=AVC_MKV}. The third field is the MIME type;
+     * the second is the network field and is almost always "*".
+     */
+    static String extractMimeType(String protocolInfo) {
         if (protocolInfo == null) return null;
         String[] parts = protocolInfo.split(":");
-        if (parts.length >= 2) {
-            return parts[1];
+        if (parts.length >= 3) {
+            String contentFormat = parts[2].trim();
+            return contentFormat.isEmpty() || "*".equals(contentFormat) ? null : contentFormat;
         }
         return null;
     }
