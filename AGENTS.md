@@ -38,10 +38,12 @@ In my network I have a Synology NAS as the DLNA server and
 
 ## Completion notification (Discord)
 When work on this repo is finished (a task, fix, or deployment is complete),
-notify the owner via this Discord webhook with a short summary of what was done:
+notify the owner via Discord with a short summary of what was done. The webhook URL is
+supplied via the `DISCORD_WEBHOOK_URL` environment variable and is never stored in this
+repository — set it in your shell profile. If it is unset, skip the notification.
 
 ```
-curl.exe -s -X POST "https://discord.com/api/webhooks/1538871903005974569/u5G5HfLSnXC78alntp7zJdyw-NUQR8v-wiw9j9gEvZi6Cvn3yLcxKsbW6zZBp2m4Snns" -H "Content-Type: application/json" -d "{\"content\":\"<short summary>\"}"
+curl.exe -s -X POST "$DISCORD_WEBHOOK_URL" -H "Content-Type: application/json" -d "{\"content\":\"<short summary>\"}"
 ```
 
 Discord accepts a plain `{"content": "..."}` payload. A response of `204 No Content`
@@ -54,7 +56,7 @@ Schannel TLS can fail (curl exit 35, `SEC_E_NO_CREDENTIALS`; .NET throws
 the same payload with Node instead (its TLS does not use Schannel):
 
 ```
-node -e "fetch('https://discord.com/api/webhooks/1538871903005974569/u5G5HfLSnXC78alntp7zJdyw-NUQR8v-wiw9j9gEvZi6Cvn3yLcxKsbW6zZBp2m4Snns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:'<short summary>'})}).then(r=>console.log(r.status))"
+node -e "fetch(process.env.DISCORD_WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:'<short summary>'})}).then(r=>console.log(r.status))"
 ```
 
 (A benign libuv assertion on Node exit after a successful 204 can be ignored.)
