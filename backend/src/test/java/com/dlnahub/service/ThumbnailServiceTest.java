@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ThumbnailServiceTest {
 
@@ -43,5 +44,25 @@ class ThumbnailServiceTest {
         service.cache("server1", "item42", "http://example.com/thumb.jpg");
         assertEquals("http://example.com/thumb.jpg", service.getUrl("server1", "item42"));
         assertNull(service.getUrl("server1", "item99"));
+    }
+
+    @Test
+    void thumbnailCacheIsBounded() {
+        ThumbnailService service = new ThumbnailService();
+        for (int i = 0; i < 6_000; i++) {
+            service.cache("server-1", "item-" + i, "http://host/thumb/" + i);
+        }
+        assertTrue(service.cacheSize() <= 5_000, "cache should be bounded, was " + service.cacheSize());
+        // The most recently written entry must survive.
+        assertEquals("http://host/thumb/5999", service.getUrl("server-1", "item-5999"));
+    }
+
+    @Test
+    void cacheIgnoresNullAndEmptyValues() {
+        ThumbnailService service = new ThumbnailService();
+        service.cache("s", "i", null);
+        service.cache("s", "i", "");
+        service.cache(null, "i", "http://host/x");
+        assertNull(service.getUrl("s", "i"));
     }
 }
