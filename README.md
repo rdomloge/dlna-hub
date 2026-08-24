@@ -2,6 +2,12 @@
 
 A DLNA/UPnP media browser and player controller for rendering devices (Xbox, Smart TVs, etc.) with TMDB metadata enrichment.
 
+## Intended Use & Security Posture
+
+This project is intended to run on a **closed home network** for home media streaming between your own devices. It has **no authentication by design**, and security is a secondary concern: the threat model is LAN-only, so cross-origin access to the backend from public websites is not a concern.
+
+Controls like the CORS restriction to the Vite dev origin (`cors.allowed-origins`) are a cheap baseline, not a core security control — do not expect (or add) web-facing hardening such as auth, CSRF protection, or rate limiting unless it is explicitly asked for.
+
 ## Testing environment
 
 The local network contains real UPnP devices to test against (discovered automatically via SSDP multicast):

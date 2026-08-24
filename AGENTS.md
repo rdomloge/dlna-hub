@@ -36,6 +36,14 @@ In my network I have a Synology NAS as the DLNA server and
 - The **global `GetSystemUpdateID` bumps every ~30–90 s** with no library changes → the
   effective-date cache uses a stale-while-revalidate grace (`STALE_GRACE_MS`).
 
+## Security Posture
+- This app targets **closed home networks only** (home media streaming between the owner's
+  own devices). It has **no authentication by design**; security is a secondary concern.
+- Cross-origin access to the backend from public websites is **not a threat model** — the
+  hub is LAN-only. The CORS restriction to the Vite dev origin (`CorsConfig`,
+  `cors.allowed-origins`) is a cheap baseline, not a core control. Do not add web-facing
+  security (auth, CSRF, rate limiting) unless explicitly requested.
+
 ## Completion notification (Discord)
 When work on this repo is finished (a task, fix, or deployment is complete),
 notify the owner via Discord with a short summary of what was done. The webhook URL is
