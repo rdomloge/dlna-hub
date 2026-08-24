@@ -34,12 +34,16 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.DateTimeException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
@@ -72,6 +76,11 @@ public class ContentBrowseService {
     private static final int ENRICH_MAX_CRAWLS_PER_CALL = 300;  // top-level subtrees crawled per enrich call
     private static final int CACHE_MAX_ENTRIES = 10_000;        // per-server cap; beyond it the cache is cleared
     private static final long NO_UPDATE_ID_TTL_MS = 10 * 60 * 1000L; // freshness fallback when no SystemUpdateID
+
+    /* In-memory search: the whole subtree has to be walked, so it needs its own budget. */
+    private static final int SEARCH_MAX_ITEMS = 20_000;   // items visited per search
+    private static final int SEARCH_MAX_DEPTH = 10;       // folder depth walked
+
     /**
      * Grace period for SystemUpdateID churn. Measured on the test Synology NAS: the global
      * SystemUpdateID bumps roughly every 30-90 s with zero library changes, so strict
@@ -364,22 +373,7 @@ public class ContentBrowseService {
         if (cached != null) {
             return pagedResult(serverId, cached, index, count);
         }
-        List<BrowsableItem> allItems = new ArrayList<>();
-        int startIdx = 0;
-        int pageSize = 500;
-
-        while (true) {
-            BrowseResult page = browseInternal(serverId, containerId, startIdx, pageSize, filter, sortBy);
-            allItems.addAll(page.getItems());
-            if (page.getItems().size() < pageSize) {
-                break;
-            }
-            startIdx += page.getItems().size();
-            if (startIdx > 50000) {
-                log.warn("In-memory search exceeded item limit for server={}, container={}", serverId, containerId);
-                break;
-            }
-        }
+        List<BrowsableItem> allItems = collectSubtree(serverId, containerId, filter);
 
         String q = query.toLowerCase();
         List<BrowsableItem> matching = allItems.stream()
@@ -400,6 +394,52 @@ public class ContentBrowseService {
 
         cacheSortedSet(cacheKey, matching);
         return pagedResult(serverId, matching, index, count);
+    }
+
+    /**
+     * Walks a container subtree breadth-first, collecting every descendant. Bounded by
+     * SEARCH_MAX_ITEMS and SEARCH_MAX_DEPTH: this runs on an interactive request, and some
+     * servers expose libraries far larger than it is reasonable to walk per keystroke.
+     * Returns whatever was collected when a bound is hit — a partial search beats none.
+     */
+    private List<BrowsableItem> collectSubtree(String serverId, String containerId, String filter) {
+        List<BrowsableItem> collected = new ArrayList<>();
+        Deque<String> frontier = new ArrayDeque<>();
+        Map<String, Integer> depthOf = new HashMap<>();
+        Set<String> visited = new HashSet<>();
+        frontier.add(containerId);
+        depthOf.put(containerId, 0);
+
+        while (!frontier.isEmpty() && collected.size() < SEARCH_MAX_ITEMS) {
+            String current = frontier.poll();
+            if (!visited.add(current)) {
+                continue;   // some servers expose the same container under several parents
+            }
+            int depth = depthOf.getOrDefault(current, 0);
+
+            int start = 0;
+            while (collected.size() < SEARCH_MAX_ITEMS) {
+                BrowseResult page = browseInternal(serverId, current, start, CRAWL_PAGE_SIZE, filter, "");
+                List<BrowsableItem> children = page.getItems();
+                for (BrowsableItem child : children) {
+                    collected.add(child);
+                    if (child.isContainer() && depth < SEARCH_MAX_DEPTH) {
+                        frontier.add(child.getId());
+                        depthOf.put(child.getId(), depth + 1);
+                    }
+                }
+                if (children.size() < CRAWL_PAGE_SIZE) {
+                    break;
+                }
+                start += children.size();
+            }
+        }
+
+        if (collected.size() >= SEARCH_MAX_ITEMS) {
+            log.warn("In-memory search hit the {}-item budget for server={}, container={}; results are partial",
+                    SEARCH_MAX_ITEMS, serverId, containerId);
+        }
+        return collected;
     }
 
     private String buildSearchCriteria(String query) {
