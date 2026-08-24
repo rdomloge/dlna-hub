@@ -110,10 +110,10 @@ kubectl apply -f k8s/service.yml -n dlna-hub
 docker login
 
 # Build and push backend
-docker buildx build --platform linux/amd64,linux/arm64 -t rdomloge/dlna-hub-backend:latest --push .
+docker buildx build --platform linux/amd64,linux/arm64 -f backend/Dockerfile -t rdomloge/dlna-hub-backend:latest --push .
 
 # Build and push frontend
-docker buildx build --platform linux/amd64,linux/arm64 -t rdomloge/dlna-hub-frontend:latest --push .
+docker buildx build --platform linux/amd64,linux/arm64 -f frontend/Dockerfile -t rdomloge/dlna-hub-frontend:latest --push .
 
 # Update the deployment (trigger image pull)
 kubectl rollout restart deployment/dlna-hub -n dlna-hub
