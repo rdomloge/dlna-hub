@@ -24,6 +24,14 @@ an XBox One (the renderer). Only the Synology can be expected to be on all
 the time. The XBox is on only sporadically — if it is not discovered, that is
 NOT a failure mode and must not be waited for: assume it is currently off,
 and either verify against the NAS or skip renderer-specific live checks.
+The owner can turn the renderer on when a live test would benefit from it,
+but it must never be assumed to be on: either assume it is off, or ask the
+owner — "Can you turn on the test renderer?" — and wait for the answer
+before continuing. The answer will be "I have turned it on, please
+continue" or "I am not going to turn it on, please find a way to work
+without it"; in the latter case, verify by other means (unit tests, source
+inspection, NAS-only live checks) and report the renderer-specific live
+check as skipped.
 
 ## Test NAS facts (Synology DS918+) — established, do not re-verify
 
