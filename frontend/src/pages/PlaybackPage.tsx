@@ -249,15 +249,18 @@ export default function PlaybackPage() {
         setPlayingPending(true);
         setPlayingPendingSince(Date.now());
         if (playbackStatus?.state === 'PAUSED_PLAYBACK') {
+          // Resume: the renderer still holds the URI, a bare Play is correct.
           await play(selectedPlayer.id, '');
-        } else if (navItem?.resourceName) {
-          await play(selectedPlayer.id, navItem.resourceName, {
-            title: cleanMediaTitle(navItem.title || '').cleansedTitle,
-            artist: navItem.artist,
-            album: navItem.album,
-            duration: navItem.duration,
-            mimeType: navItem.mimeType,
-            protocolInfo: navItem.protocolInfo,
+        } else if (item?.resourceName) {
+          // Restart from stopped: re-send the URI. `item` is navItem ?? activeItem, so this
+          // still works after the one-time router state has been consumed.
+          await play(selectedPlayer.id, item.resourceName, {
+            title: cleanMediaTitle(item.title || '').cleansedTitle,
+            artist: item.artist,
+            album: item.album,
+            duration: item.duration,
+            mimeType: item.mimeType,
+            protocolInfo: item.protocolInfo,
           });
         } else {
           await play(selectedPlayer.id, '');
