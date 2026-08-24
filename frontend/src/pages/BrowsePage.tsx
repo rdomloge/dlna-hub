@@ -61,6 +61,7 @@ export default function BrowsePage() {
   const isFetchingRef = useRef(false);
   const latestRequestRef = useRef(0);
   const searchQueryRef = useRef('');
+  const lastLoadedServerRef = useRef<string | null>(null);
 
   const objectId = browseState.objectId;
   const breadcrumb = browseState.breadcrumb;
@@ -128,12 +129,19 @@ export default function BrowsePage() {
   );
 
   useEffect(() => {
-    if (selectedServer) {
-      doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
-    } else {
+    if (!selectedServer) {
+      lastLoadedServerRef.current = null;
       navigate('/servers');
+      return;
     }
-  }, [selectedServer, doBrowse, navigate]);
+    if (lastLoadedServerRef.current === selectedServer.id) return;
+    lastLoadedServerRef.current = selectedServer.id;
+    doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
+    // doBrowse / browseState are intentionally not dependencies: this effect is the
+    // initial load for a newly selected server. Every later navigation, sort change and
+    // search goes through its own explicit doBrowse / fetchItems call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedServer, navigate]);
 
   useEffect(() => {
     if (loading || loadingMore) return;
