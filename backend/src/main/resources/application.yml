@@ -2,20 +2,20 @@ server:
   port: 9100
 
 dlna:
-  network-interface: ${NETWORK_INTERFACE:10.0.0.150}
+  # Blank = let jUPnP pick the interfaces itself, which is correct on most networks.
+  # Set to an interface name (e.g. "eth0") or a comma-separated list of local IPs to pin it.
+  network-interface: ${NETWORK_INTERFACE:}
   discovery-timeout: 5000
   discovery-interval: ${DISCOVERY_INTERVAL:60000}
-  static-device-check-interval: ${STATIC_DEVICE_CHECK_INTERVAL:5000}
+  # Optional fallback for devices that Windows AppContainer isolation hides from local SSDP.
+  # Empty by default: with no entries the periodic check does nothing. Configure via
+  # DLNA_STATIC_DEVICES_0_UDN / _DESCRIPTOR_URL when you actually need it.
+  static-device-check-interval: ${STATIC_DEVICE_CHECK_INTERVAL:30000}
+  static-devices: []
   # Seconds a discovered device stays in the list after its last SSDP heartbeat or search
   # response. Live devices keep refreshing their timestamp, so devices that leave the
   # network drop out quickly. Keep this above discovery-interval / 1000.
   remote-device-max-age-seconds: ${REMOTE_DEVICE_MAX_AGE_SECONDS:90}
-  # Optional fallback for devices that Windows AppContainer isolation hides from local SSDP.
-  static-devices:
-    - udn: ${STATIC_RENDERER_UDN:5ae95e81-4e22-43dc-bdde-50adad44df6e}
-      descriptor-url: ${STATIC_RENDERER_DESCRIPTOR_URL:http://10.0.0.150:1258/}
-      port-range-start: ${STATIC_RENDERER_PORT_RANGE_START:1024}
-      port-range-end: ${STATIC_RENDERER_PORT_RANGE_END:2048}
 
 cors:
   # Comma-separated origins allowed to call the API cross-origin. Only needed for the Vite

@@ -17,6 +17,27 @@ The local network contains real UPnP devices to test against (discovered automat
   - It advertises a `Search` action but answers it with a UPnP error. The backend falls back to in-memory search when the action fails.
 - **Xbox One** — DLNA/DIAL media renderer for playback tests.
 
+## Configuration
+
+All settings have environment-variable overrides. Defaults are safe on any network.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SERVER_PORT` | `9100` | HTTP port (production sets `9200`) |
+| `NETWORK_INTERFACE` | *(auto)* | Interface name or comma-separated local IPs to bind SSDP to. Leave unset unless discovery picks the wrong interface. |
+| `DISCOVERY_INTERVAL` | `60000` | Milliseconds between SSDP searches |
+| `REMOTE_DEVICE_MAX_AGE_SECONDS` | `90` | How long a device stays listed after its last heartbeat. Keep above `DISCOVERY_INTERVAL / 1000`. |
+| `STATIC_DEVICE_CHECK_INTERVAL` | `30000` | Milliseconds between static-device checks. Does nothing unless `dlna.static-devices` is configured. |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Origins allowed to call the API cross-origin. Never set to `*`. |
+| `TMDB_API_READ_ACCESS_TOKEN` | *(unset)* | Enables TMDB metadata. Without it `/api/tmdb/search` returns `{"available": false}`. |
+
+### Static devices (optional)
+
+Some devices are hidden from SSDP by Windows AppContainer isolation. To reach one anyway,
+configure it explicitly in `application.yml` or via environment variables. If the descriptor
+URL is unreachable, the backend scans the configured port range on that host to find it —
+so set a narrow range.
+
 ## Deployment — Kubernetes
 
 The solution runs as a single ReplicaSet (1 replica) in the `dlna-hub` namespace on a K3s cluster.
