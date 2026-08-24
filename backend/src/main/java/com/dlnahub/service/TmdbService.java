@@ -57,7 +57,7 @@ public class TmdbService {
             return List.of();
         }
 
-        log.info("Searching TMDB for title='{}', yearHint={}, tvHint={}", title, yearHint, tvHint);
+        log.debug("Searching TMDB for title='{}', yearHint={}, tvHint={}", title, yearHint, tvHint);
 
         List<SearchCandidate> candidates = new ArrayList<>();
         List<SearchCandidate> movieResults = List.of();

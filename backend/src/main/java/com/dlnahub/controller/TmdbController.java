@@ -32,7 +32,7 @@ public class TmdbController {
             @RequestParam String title,
             @RequestParam(required = false) Integer year,
             @RequestParam(required = false) Boolean tv) {
-        log.info("TMDB search request for: {}, year={}, tv={}", title, year, tv);
+        log.debug("TMDB search request for: {}, year={}, tv={}", title, year, tv);
 
         if (!tmdbConfig.isEnabled()) {
             return ResponseEntity.ok(Map.of("available", false));

@@ -51,8 +51,10 @@ public class AvTransportService {
                 return n;
             }
         }
-        log.warn("Argument '{}' not found on action {}. Available: {}",
-                standardName, action.getName(), java.util.Arrays.toString(action.getInputArguments()));
+        if (log.isDebugEnabled()) {
+            log.debug("Argument '{}' not found on action {}. Available: {}",
+                    standardName, action.getName(), java.util.Arrays.toString(action.getInputArguments()));
+        }
         return standardName;
     }
 
@@ -99,8 +101,6 @@ public class AvTransportService {
         if (setUriAction == null) {
             throw new DlnaException("SetAVTransportURI action not supported on this player");
         }
-
-        log.info("SetAVTransportURI inputs: {}", java.util.Arrays.toString(setUriAction.getInputArguments()));
 
         ActionInvocation invocation = new ActionInvocation(setUriAction);
         setInstanceId(invocation, setUriAction);
@@ -213,9 +213,6 @@ public class AvTransportService {
             throw new DlnaException("GetTransportInfo action not supported on this player");
         }
 
-        log.info("GetTransportInfo inputs: {}", java.util.Arrays.toString(action.getInputArguments()));
-        log.info("GetTransportInfo outputs: {}", java.util.Arrays.toString(action.getOutputArguments()));
-
         ActionInvocation invocation = new ActionInvocation(action);
         setInstanceId(invocation, action);
         executeSync(invocation, playerId);
@@ -231,9 +228,6 @@ public class AvTransportService {
         if (action == null) {
             throw new DlnaException("GetPositionInfo action not supported on this player");
         }
-
-        log.info("GetPositionInfo inputs: {}", java.util.Arrays.toString(action.getInputArguments()));
-        log.info("GetPositionInfo outputs: {}", java.util.Arrays.toString(action.getOutputArguments()));
 
         ActionInvocation invocation = new ActionInvocation(action);
         setInstanceId(invocation, action);

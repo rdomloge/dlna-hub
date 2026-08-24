@@ -83,7 +83,7 @@ public class PlaybackController {
 
     @GetMapping("/{playerId}/status")
     public ResponseEntity<PlaybackStatusDto> status(@PathVariable String playerId) {
-        log.info("Status request for player {}", playerId);
+        log.debug("Status request for player {}", playerId);
         String state = avTransportService.getTransportState(playerId);
         String trackUri;
         String trackDuration;
@@ -122,7 +122,7 @@ public class PlaybackController {
 
     @GetMapping("/{playerId}/volume")
     public ResponseEntity<Map<String, Integer>> getVolume(@PathVariable String playerId) {
-        log.info("Get volume request for player {}", playerId);
+        log.debug("Get volume request for player {}", playerId);
         int volume = renderingControlService.getVolume(playerId);
         return ResponseEntity.ok(Map.of("volume", volume));
     }
