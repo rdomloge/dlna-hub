@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { browse as browseApi, search as searchApi, type SortOption } from '@/api/browse';
+import { getThumbnail } from '@/api/browse';
 import { useAppStore } from '@/store/useAppStore';
 import type { BrowsableItem } from '@/types/media';
 import { mediaDateLabel } from '@/utils/formatDate';
@@ -432,6 +433,18 @@ export default function BrowsePage() {
                             d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
                           />
                         </svg>
+                      ) : item.thumbnailUrl && selectedServer ? (
+                        <img
+                          src={getThumbnail(selectedServer.id, item.id)}
+                          alt=""
+                          loading="lazy"
+                          className="h-10 w-10 rounded object-cover shrink-0 bg-gray-200"
+                          onError={(e) => {
+                            // The proxy 404s when the URL has fallen out of the backend cache.
+                            // Hide the broken image rather than showing a browser placeholder.
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
                       ) : (
                         <svg
                           xmlns="http://www.w3.org/2000/svg"

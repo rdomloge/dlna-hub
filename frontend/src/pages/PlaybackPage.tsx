@@ -11,6 +11,7 @@ import {
   getStatus,
   setVolume,
 } from '@/api/playback';
+import { getThumbnail } from '@/api/browse';
 import { useAppStore } from '@/store/useAppStore';
 import { usePlaybackStore } from '@/store/usePlaybackStore';
 import { useVisibility } from '@/hooks/useVisibility';
@@ -23,6 +24,7 @@ export default function PlaybackPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedPlayer = useAppStore((s) => s.selectedPlayer);
+  const selectedServer = useAppStore((s) => s.selectedServer);
   const playbackStatus = usePlaybackStore((s) => s.status);
   const setPlaybackStatus = usePlaybackStore((s) => s.setStatus);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
@@ -47,7 +49,6 @@ export default function PlaybackPage() {
   const [trackTitle, setTrackTitle] = useState('');
   const [trackArtist, setTrackArtist] = useState('');
   const [trackAlbum, setTrackAlbum] = useState('');
-  const [thumbnailUrl] = useState('');
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
@@ -74,6 +75,10 @@ export default function PlaybackPage() {
     isTvHint?: boolean;
   }>({ title: '' });
   const parsedTitle = useMemo(() => cleanMediaTitle(trackTitle), [trackTitle]);
+  const thumbnailUrl = useMemo(() => {
+    if (!item?.thumbnailUrl || !selectedServer) return '';
+    return getThumbnail(selectedServer.id, item.id);
+  }, [item, selectedServer]);
 
   useEffect(() => {
     if (!selectedPlayer) {
@@ -405,8 +410,9 @@ export default function PlaybackPage() {
             {thumbnailUrl && (
               <img
                 src={thumbnailUrl}
-                alt={trackTitle}
+                alt=""
                 className="w-32 h-32 object-cover rounded-lg mx-auto mb-4"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
               />
             )}
             <h2 className="text-xl font-bold text-gray-900">{parsedTitle.cleansedTitle}</h2>
