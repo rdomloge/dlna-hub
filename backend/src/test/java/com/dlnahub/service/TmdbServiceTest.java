@@ -34,7 +34,8 @@ class TmdbServiceTest {
         TmdbConfig config = new TmdbConfig();
         config.setApiReadAccessToken("test-token");
         RestTemplate restTemplate = new RestTemplate();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        // Detail fetches run in parallel, so the detail requests may arrive in either order.
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).ignoreExpectOrder(true).build();
         TmdbService service = new TmdbService(config, restTemplate);
 
         server.expect(requestTo("https://api.themoviedb.org/3/search/movie?query=Dune&language=en-US&year=1984"))
@@ -76,7 +77,8 @@ class TmdbServiceTest {
         TmdbConfig config = new TmdbConfig();
         config.setApiReadAccessToken("test-token");
         RestTemplate restTemplate = new RestTemplate();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        // Detail fetches run in parallel, so the detail requests may arrive in either order.
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).ignoreExpectOrder(true).build();
         TmdbService service = new TmdbService(config, restTemplate);
 
         server.expect(requestTo("https://api.themoviedb.org/3/search/movie?query=The+Office&language=en-US"))
@@ -92,6 +94,36 @@ class TmdbServiceTest {
 
         assertEquals(List.of("movie", "tv"), results.stream().map(TmdbMediaDto::getType).toList());
         server.verify();
+    }
+
+    @Test
+    void repeatedSearchWithSameArgumentsIssuesNoNewHttpCalls() {
+        TmdbConfig config = new TmdbConfig();
+        config.setApiReadAccessToken("test-token");
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        TmdbService service = new TmdbService(config, restTemplate);
+
+        server.expect(requestTo("https://api.themoviedb.org/3/search/movie?query=Dune&language=en-US"))
+                .andRespond(withSuccess("""
+                        {"results":[{"id":1,"title":"Dune","release_date":"2021-10-22"}]}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.themoviedb.org/3/search/tv?query=Dune&language=en-US"))
+                .andRespond(withSuccess("{\"results\":[]}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.themoviedb.org/3/movie/1?language=en-US&append_to_response=credits"))
+                .andRespond(withSuccess(movieDetails(1, "2021-10-22"), MediaType.APPLICATION_JSON));
+
+        List<TmdbMediaDto> first = service.searchByTitle("Dune", null, null);
+        assertEquals(List.of("1"), first.stream().map(TmdbMediaDto::getTmdbId).toList());
+        server.verify();
+
+        // Second call with the same arguments: no expectations are registered, so any HTTP
+        // call issued by it would make verify() fail — the mock is invoked the same total
+        // number of times after the second call as after the first.
+        List<TmdbMediaDto> second = service.searchByTitle("Dune", null, null);
+        server.verify();
+
+        assertEquals(first, second);
     }
 
     private static String movieDetails(int id, String releaseDate) {
