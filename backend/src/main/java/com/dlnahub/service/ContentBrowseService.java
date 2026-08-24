@@ -83,7 +83,20 @@ public class ContentBrowseService {
 
     /** container-id -> latest descendant media date, keyed per server and invalidated by SystemUpdateID. */
     private final Map<String, Map<String, ContainerDateEntry>> containerDateCache = new ConcurrentHashMap<>();
+
+    /** Per-container crawl locks, so two concurrent requests do not crawl the same subtree twice. */
     private final Map<String, Object> containerDateLocks = new ConcurrentHashMap<>();
+
+    private static final int MAX_TRACKED_CONTAINER_LOCKS = 4_096;
+
+    private Object crawlLock(String serverId, String containerId) {
+        if (containerDateLocks.size() > MAX_TRACKED_CONTAINER_LOCKS) {
+            // Bound the lock map. Dropping locks is safe: the worst case is two requests
+            // crawling the same subtree concurrently, which is correct, just wasteful.
+            containerDateLocks.clear();
+        }
+        return containerDateLocks.computeIfAbsent(serverId + "/" + containerId, k -> new Object());
+    }
 
     record ContainerDateEntry(String updateId, Instant latestDate, long computedAt) {
     }
@@ -786,47 +799,63 @@ public class ContentBrowseService {
         String updateId = getSystemUpdateId(serverId);
         long now = System.currentTimeMillis();
 
-        Object lock = containerDateLocks.computeIfAbsent(serverId, k -> new Object());
-        synchronized (lock) {
-            try {
-                Map<String, ContainerDateEntry> cache =
-                        containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
-                CrawlBudget budget = new CrawlBudget(ENRICH_MAX_ITEMS_PER_CALL);
-                int crawls = 0;
-                List<BrowsableItem> out = new ArrayList<>(items.size());
-                for (BrowsableItem item : items) {
-                    if (!item.isContainer()) {
-                        out.add(item);
-                        continue;
-                    }
-                    ContainerDateEntry entry = cache.get(item.getId());
-                    if (!isFresh(entry, updateId, now)) {
-                        if (crawls < ENRICH_MAX_CRAWLS_PER_CALL) {
-                            CrawlResult result = crawlSubtree(serverId, item.getId(), updateId, 0, budget, cache);
-                            crawls++;
-                            // Only complete crawls replace the entry; partial (budget-exhausted)
-                            // results keep the previous one so the last known date keeps being
-                            // served while a later request finishes the subtree.
-                            if (result.complete) {
-                                entry = new ContainerDateEntry(updateId, result.date, now);
-                                cache.put(item.getId(), entry);
-                            }
-                        }
-                    }
-                    if (entry != null && entry.latestDate() != null) {
-                        out.add(withEffectiveDate(item, entry.latestDate()));
-                    } else {
-                        out.add(item);
-                    }
+        try {
+            Map<String, ContainerDateEntry> cache =
+                    containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
+            CrawlBudget budget = new CrawlBudget(ENRICH_MAX_ITEMS_PER_CALL);
+            int crawls = 0;
+            List<BrowsableItem> out = new ArrayList<>(items.size());
+            for (BrowsableItem item : items) {
+                if (!item.isContainer()) {
+                    out.add(item);
+                    continue;
                 }
-                if (cache.size() > CACHE_MAX_ENTRIES) {
-                    cache.clear();
+                ContainerDateEntry entry = cache.get(item.getId());
+                if (!isFresh(entry, updateId, now) && crawls < ENRICH_MAX_CRAWLS_PER_CALL) {
+                    crawls++;
+                    entry = crawlAndCache(serverId, item.getId(), updateId, now, budget, cache, entry);
                 }
-                return out;
-            } catch (Exception e) {
-                log.warn("Container date enrichment failed for server {}: {}", serverId, e.getMessage());
-                return items;
+                if (entry != null && entry.latestDate() != null) {
+                    out.add(withEffectiveDate(item, entry.latestDate()));
+                } else {
+                    out.add(item);
+                }
             }
+            if (cache.size() > CACHE_MAX_ENTRIES) {
+                cache.clear();
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("Container date enrichment failed for server {}: {}", serverId, e.getMessage());
+            return items;
+        }
+    }
+
+    /**
+     * Crawls one container's subtree under a per-container lock, so two concurrent requests do
+     * not duplicate the work. The lock covers only this container's crawl — never the whole
+     * enrichment pass, which would serialise every date-sorted browse of the server.
+     * Re-checks the cache inside the lock: the request we queued behind may have just filled it.
+     */
+    private ContainerDateEntry crawlAndCache(String serverId, String containerId, String updateId,
+                                             long now, CrawlBudget budget,
+                                             Map<String, ContainerDateEntry> cache,
+                                             ContainerDateEntry stale) {
+        synchronized (crawlLock(serverId, containerId)) {
+            ContainerDateEntry current = cache.get(containerId);
+            if (isFresh(current, updateId, System.currentTimeMillis())) {
+                return current;
+            }
+            CrawlResult result = crawlSubtree(serverId, containerId, updateId, 0, budget, cache);
+            // Only complete crawls replace the entry; partial (budget-exhausted) results keep
+            // the previous one so the last known date keeps being served while a later request
+            // finishes the subtree.
+            if (result.complete) {
+                ContainerDateEntry fresh = new ContainerDateEntry(updateId, result.date, now);
+                cache.put(containerId, fresh);
+                return fresh;
+            }
+            return stale;
         }
     }
 
