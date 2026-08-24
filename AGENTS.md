@@ -19,8 +19,11 @@ cd backend && mvn spring-boot:run   # Start backend
 - **Package**: `com.dlnahub`
 
 ## Testing environment
-In my network I have a Synology NAS as the DLNA server and
- an XBox One as the renderer.
+In my network I have 2 DLNA devices: a Synology NAS (the DLNA server) and
+an XBox One (the renderer). Only the Synology can be expected to be on all
+the time. The XBox is on only sporadically — if it is not discovered, that is
+NOT a failure mode and must not be waited for: assume it is currently off,
+and either verify against the NAS or skip renderer-specific live checks.
 
 ## Test NAS facts (Synology DS918+) — established, do not re-verify
 
