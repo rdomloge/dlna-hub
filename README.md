@@ -140,7 +140,7 @@ kubectl rollout restart deployment/dlna-hub -n dlna-hub
 - **Media servers** (UPnP `MediaServer` devices) are discovered automatically via SSDP multicast using jUPnP. Each server is identified by a UUID derived from its UDN via `UUID.nameUUIDFromBytes(udn)`.
 - **Media renderers** (UPnP `MediaRenderer` devices) are discovered independently. Each renderer has its IP/port extracted from its descriptor URL, its supported protocols parsed from the `ConnectionManager.ProtocolInfo` state variable, and its transport capabilities extracted from its `AVTransport` actions.
 - Both discovery managers register/unregister devices as `deviceAdded` and `deviceRemoved` callbacks fire from jUPnP's registry. Embedded devices are recursed into.
-- Server subscriptions (`/api/servers/{id}/subscribe`) are tracked per-server in a `ConcurrentHashMap`; the flag is consulted by jUPnP event listeners to decide whether to process `SystemUpdateID` change notifications.
+- The effective-date cache is invalidated by **polling** `GetSystemUpdateID`, not by GENA events. Subscribing to the ContentDirectory's `ContainerUpdateIDs` event would let the cache invalidate precisely instead, and is worth doing if enrichment cost becomes a problem — it is not implemented today.
 
 ### Content Browsing
 
@@ -248,8 +248,6 @@ The frontend's `cleanMediaTitle` utility extracts structured metadata from raw f
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/servers` | List discovered DLNA servers |
-| POST | `/servers/{id}/subscribe` | Subscribe to server events |
-| DELETE | `/servers/{id}/unsubscribe` | Unsubscribe |
 | GET | `/servers/{id}/browse` | Browse content (params: `objectId`, `index`, `count`, `filter`, `sortBy`) |
 | GET | `/servers/{id}/search` | Search content (params: `containerId`, `query`, `index`, `count`, `filter`, `sortBy`) |
 | GET | `/servers/{id}/browse/{itemId}/metadata` | Get item metadata |

@@ -85,8 +85,6 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/servers` | List discovered DLNA servers |
-| POST | `/servers/{id}/subscribe` | Subscribe to server events |
-| DELETE | `/servers/{id}/unsubscribe` | Unsubscribe |
 | GET | `/servers/{id}/browse` | Browse content (params: `objectId`, `index`, `count`, `filter`, `sortBy`) |
 | GET | `/servers/{id}/browse/{itemId}/metadata` | Get item metadata |
 | GET | `/servers/{id}/thumbnail/{itemId}` | Thumbnail proxy (image/jpeg) |
@@ -123,7 +121,7 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 
 ### API Layer (`api/`)
 - `api/axios.ts` - Axios instance (baseURL: `VITE_API_URL` or `/api`, 10s timeout)
-- `api/servers.ts` - `getServers()`, `subscribeToServer()`, `unsubscribeFromServer()`
+- `api/servers.ts` - `getServers()`
 - `api/players.ts` - `getPlayers()`, `getPlayer()`
 - `api/browse.ts` - `browse()`, `getMetadata()`, `getThumbnail()`
 - `api/playback.ts` - `play()`, `pause()`, `stop()`, `seek()`, `forward()`, `backward()`, `getStatus()`, `getVolume()`, `setVolume()`
