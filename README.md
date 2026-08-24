@@ -72,8 +72,11 @@ A Kubernetes Secret (`dlna-hub-secret`) provides TMDB API credentials injected v
 
 | Key | Purpose |
 |-----|---------|
-| `TMDB_API_KEY` | TMDB API key for metadata lookups |
-| `TMDB_API_READ_ACCESS_TOKEN` | TMDB JWT read access token |
+| `TMDB_API_READ_ACCESS_TOKEN` | TMDB JWT read access token. The only credential the backend reads. |
+| `TMDB_API_KEY` | TMDB API key. Currently unused by the code; kept for compatibility. |
+
+Credentials live only in `k8s/secret.yml`, which is gitignored. `k8s/secret.example.yml`
+is the committed template.
 
 ### Ports Summary
 
@@ -89,7 +92,10 @@ A Kubernetes Secret (`dlna-hub-secret`) provides TMDB API credentials injected v
 # Create the namespace
 kubectl create namespace dlna-hub
 
-# Apply secrets (update k8s/secret.yml with your TMDB credentials first)
+# Create the secret from the template. k8s/secret.yml is gitignored --
+# never commit the filled-in copy.
+cp k8s/secret.example.yml k8s/secret.yml
+$EDITOR k8s/secret.yml          # replace REPLACE_ME with your TMDB token
 kubectl apply -f k8s/secret.yml -n dlna-hub
 
 # Apply the deployment and service
@@ -119,4 +125,4 @@ kubectl rollout restart deployment/dlna-hub -n dlna-hub
 |------|---------|
 | `k8s/deployment.yml` | Deployment with 2 containers (backend + frontend) |
 | `k8s/service.yml` | LoadBalancer service (port 9090 → frontend 9201) |
-| `k8s/secret.yml` | TMDB API credentials (update before deploying) |
+| `k8s/secret.example.yml` | Template for the TMDB credentials. Copy to `k8s/secret.yml` (gitignored) and fill in before deploying. |
