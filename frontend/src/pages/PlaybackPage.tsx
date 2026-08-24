@@ -213,29 +213,42 @@ export default function PlaybackPage() {
     }
   }, [selectedPlayer, setPlaybackStatus, setIsPlaying, setVolumeState, setCurrentTime, setDuration, setPlayingPending, playingPending, playingPendingSince, navigate, setReconnecting]);
 
+  const pollStatusRef = useRef(pollStatus);
   useEffect(() => {
-    if (!selectedPlayer) return;
+    pollStatusRef.current = pollStatus;
+  }, [pollStatus]);
 
-    if (isVisible) {
-      setReconnecting(true);
-      pollStatus();
-      consecutiveErrorsRef.current = 0;
-      const interval = (isPlaying || playingPending) ? 1000 : 5000;
-      pollIntervalRef.current = setInterval(pollStatus, interval);
-    } else {
+  const pollIntervalMs = (isPlaying || playingPending) ? 1000 : 5000;
+
+  useEffect(() => {
+    if (!selectedPlayer || !isVisible) {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
+      return;
     }
 
+    // The interval calls through the ref, so a new pollStatus identity (which changes on
+    // every playingPending transition) does not tear the interval down and re-show the
+    // Connecting overlay.
+    pollIntervalRef.current = setInterval(() => pollStatusRef.current(), pollIntervalMs);
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
     };
-  }, [selectedPlayer, isVisible, pollStatus, setReconnecting, isPlaying, playingPending]);
+  }, [selectedPlayer, isVisible, pollIntervalMs]);
+
+  // Fires only when the player changes or the tab becomes visible again — a real
+  // (re)connection, not an ordinary play/pause transition.
+  useEffect(() => {
+    if (!selectedPlayer || !isVisible) return;
+    setReconnecting(true);
+    consecutiveErrorsRef.current = 0;
+    pollStatusRef.current();
+  }, [selectedPlayer, isVisible, setReconnecting]);
 
   const handlePlayPause = async () => {
     if (!selectedPlayer) return;
