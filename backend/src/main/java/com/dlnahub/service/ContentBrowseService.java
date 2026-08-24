@@ -111,6 +111,45 @@ public class ContentBrowseService {
         }
     }
 
+    /**
+     * Fully-fetched, sorted result sets, so that paging through a client-sorted container or
+     * an in-memory search does not re-fetch the whole container for every 50-item page.
+     * Deliberately short-lived: this is a paging aid, not a library cache. Cross-check with
+     * containerDateCache, which has its own (SystemUpdateID-based) invalidation.
+     */
+    private static final long SORTED_PAGE_CACHE_TTL_MS = 60_000L;
+    private static final int SORTED_PAGE_CACHE_MAX_ENTRIES = 32;
+
+    private record SortedSet(List<BrowsableItem> items, long computedAt) {
+    }
+
+    private final Map<String, SortedSet> sortedPageCache = new ConcurrentHashMap<>();
+
+    private static String sortedCacheKey(String serverId, String scope, String objectId, String sortBy) {
+        return serverId + "\u0000" + scope + "\u0000" + objectId + "\u0000" + (sortBy == null ? "" : sortBy);
+    }
+
+    /** Returns the cached set if it is still within its TTL, otherwise null. */
+    private List<BrowsableItem> cachedSortedSet(String key) {
+        SortedSet cached = sortedPageCache.get(key);
+        if (cached == null) return null;
+        if (System.currentTimeMillis() - cached.computedAt() >= SORTED_PAGE_CACHE_TTL_MS) {
+            sortedPageCache.remove(key);
+            return null;
+        }
+        return cached.items();
+    }
+
+    private void cacheSortedSet(String key, List<BrowsableItem> items) {
+        if (sortedPageCache.size() >= SORTED_PAGE_CACHE_MAX_ENTRIES) {
+            // Drop the oldest entry rather than clearing everything, so an active browse keeps its set.
+            sortedPageCache.entrySet().stream()
+                    .min(Comparator.comparingLong(e -> e.getValue().computedAt()))
+                    .ifPresent(e -> sortedPageCache.remove(e.getKey()));
+        }
+        sortedPageCache.put(key, new SortedSet(List.copyOf(items), System.currentTimeMillis()));
+    }
+
     @Autowired
     public ContentBrowseService(ServerBrowseService serverBrowseService,
                                  ThumbnailService thumbnailService,
@@ -129,13 +168,20 @@ public class ContentBrowseService {
         boolean clientSort = needsClientSort(sortBy) && !supportsServerSort(serverId);
         if (clientSort) {
             // Server does not sort on its side (e.g. Synology silently ignores SortCriteria) —
-            // we fetch the whole container, sort in memory and page locally. See sortItems().
-            String effectiveFilter = dateSort ? ensureFilterField(filter, "dc:date") : filter;
-            List<BrowsableItem> all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
-            if (dateSort) {
-                all = enrichContainerDates(serverId, all);
+            // we fetch the whole container, sort in memory and page locally. The sorted set is
+            // cached briefly so that scrolling does not re-fetch the container for every page.
+            String cacheKey = sortedCacheKey(serverId, "browse", objectId, sortBy);
+            List<BrowsableItem> all = cachedSortedSet(cacheKey);
+            if (all == null) {
+                String effectiveFilter = dateSort ? ensureFilterField(filter, "dc:date") : filter;
+                all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
+                if (dateSort) {
+                    all = enrichContainerDates(serverId, all);
+                }
+                all = new ArrayList<>(all);
+                sortItems(all, sortBy);
+                cacheSortedSet(cacheKey, all);
             }
-            sortItems(all, sortBy);
             return pagedResult(serverId, all, index, count);
         }
         RemoteDevice device = serverBrowseService.getDevice(serverId);
@@ -241,11 +287,17 @@ public class ContentBrowseService {
         if (searchAction != null) {
             try {
                 if (needsClientSort(sortBy) && !supportsServerSort(serverId)) {
-                    List<BrowsableItem> all = fetchAllSearchResults(serverId, contentDir, containerId, query, filter, sortBy);
-                    if (isDateSort(sortBy)) {
-                        all = enrichContainerDates(serverId, all);
+                    String cacheKey = sortedCacheKey(serverId, "searchAction:" + query.toLowerCase(), containerId, sortBy);
+                    List<BrowsableItem> all = cachedSortedSet(cacheKey);
+                    if (all == null) {
+                        all = fetchAllSearchResults(serverId, contentDir, containerId, query, filter, sortBy);
+                        if (isDateSort(sortBy)) {
+                            all = enrichContainerDates(serverId, all);
+                        }
+                        all = new ArrayList<>(all);
+                        sortItems(all, sortBy);
+                        cacheSortedSet(cacheKey, all);
                     }
-                    sortItems(all, sortBy);
                     return pagedResult(serverId, all, index, count);
                 }
                 return searchViaAction(serverId, contentDir, containerId, query, index, count, filter, sortBy);
@@ -294,6 +346,11 @@ public class ContentBrowseService {
 
     private BrowseResult searchInMemory(String serverId, String containerId, String query, int index, int count,
                                          String filter, String sortBy) {
+        String cacheKey = sortedCacheKey(serverId, "search:" + query.toLowerCase(), containerId, sortBy);
+        List<BrowsableItem> cached = cachedSortedSet(cacheKey);
+        if (cached != null) {
+            return pagedResult(serverId, cached, index, count);
+        }
         List<BrowsableItem> allItems = new ArrayList<>();
         int startIdx = 0;
         int pageSize = 500;
@@ -328,18 +385,8 @@ public class ContentBrowseService {
             sortItems(matching, sortBy);
         }
 
-        int total = matching.size();
-        int from = Math.min(index, total);
-        int to = Math.min(from + count, total);
-        List<BrowsableItem> paged = matching.subList(from, to);
-
-        for (BrowsableItem item : paged) {
-            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
-                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
-            }
-        }
-
-        return new BrowseResult(paged, total, index, count, "");
+        cacheSortedSet(cacheKey, matching);
+        return pagedResult(serverId, matching, index, count);
     }
 
     private String buildSearchCriteria(String query) {
