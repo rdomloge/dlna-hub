@@ -2,6 +2,7 @@ package com.dlnahub.controller;
 
 import com.dlnahub.dlna.model.BrowseResult;
 import com.dlnahub.dlna.model.BrowsableItem;
+import com.dlnahub.exception.DeviceNotFoundException;
 import com.dlnahub.service.ContentBrowseService;
 import com.dlnahub.service.ThumbnailService;
 import org.slf4j.Logger;
@@ -34,30 +35,20 @@ public class BrowseController {
     }
 
     @GetMapping("/{serverId}/browse")
-    public ResponseEntity<?> browse(
+    public BrowseResult browse(
             @PathVariable String serverId,
             @RequestParam(value = "objectId", defaultValue = "0") String objectId,
             @RequestParam(value = "index", defaultValue = "0") int index,
             @RequestParam(value = "count", defaultValue = "50") int count,
             @RequestParam(value = "filter", defaultValue = DEFAULT_FILTER) String filter,
             @RequestParam(value = "sortBy", defaultValue = "") String sortBy) {
-        try {
-            log.debug("Browse request: server={}, objectId={}, index={}, count={}",
-                    serverId, objectId, index, count);
-            BrowseResult result = contentBrowseService.browse(serverId, objectId, index, count, filter, sortBy);
-            return ResponseEntity.ok(result);
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("error", e.getMessage()));
-        } catch (RuntimeException e) {
-            log.error("Browse failed", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", e.getMessage()));
-        }
+        log.debug("Browse request: server={}, objectId={}, index={}, count={}",
+                serverId, objectId, index, count);
+        return contentBrowseService.browse(serverId, objectId, index, count, filter, sortBy);
     }
 
     @GetMapping("/{serverId}/search")
-    public ResponseEntity<?> search(
+    public BrowseResult search(
             @PathVariable String serverId,
             @RequestParam(value = "containerId", defaultValue = "0") String containerId,
             @RequestParam String query,
@@ -65,42 +56,22 @@ public class BrowseController {
             @RequestParam(value = "count", defaultValue = "50") int count,
             @RequestParam(value = "filter", defaultValue = DEFAULT_FILTER) String filter,
             @RequestParam(value = "sortBy", defaultValue = "") String sortBy) {
-        try {
-            log.debug("Search request: server={}, container={}, query={}, index={}, count={}",
-                    serverId, containerId, query, index, count);
-            BrowseResult result = contentBrowseService.search(serverId, containerId, query, index, count, filter, sortBy);
-            return ResponseEntity.ok(result);
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("error", e.getMessage()));
-        } catch (RuntimeException e) {
-            log.error("Search failed", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", e.getMessage()));
-        }
+        log.debug("Search request: server={}, container={}, query={}, index={}, count={}",
+                serverId, containerId, query, index, count);
+        return contentBrowseService.search(serverId, containerId, query, index, count, filter, sortBy);
     }
 
     @GetMapping("/{serverId}/browse/{itemId}/metadata")
-    public ResponseEntity<?> metadata(
+    public BrowsableItem metadata(
             @PathVariable String serverId,
             @PathVariable String itemId,
             @RequestParam(value = "filter", defaultValue = "*") String filter) {
-        try {
-            log.debug("Metadata request: server={}, item={}", serverId, itemId);
-            List<BrowsableItem> items = contentBrowseService.browseMetadata(serverId, itemId, filter);
-            if (items.isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("error", "Item not found: " + itemId));
-            }
-            return ResponseEntity.ok(items.get(0));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("error", e.getMessage()));
-        } catch (RuntimeException e) {
-            log.error("Metadata fetch failed", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", e.getMessage()));
+        log.debug("Metadata request: server={}, item={}", serverId, itemId);
+        List<BrowsableItem> items = contentBrowseService.browseMetadata(serverId, itemId, filter);
+        if (items.isEmpty()) {
+            throw new DeviceNotFoundException("Item not found: " + itemId);
         }
+        return items.get(0);
     }
 
     @GetMapping(value = "/{serverId}/thumbnail/{itemId}", produces = MediaType.IMAGE_JPEG_VALUE)

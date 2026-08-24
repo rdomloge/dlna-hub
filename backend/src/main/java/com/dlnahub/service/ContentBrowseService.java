@@ -3,6 +3,8 @@ package com.dlnahub.service;
 import com.dlnahub.dlna.UpnpServiceManager;
 import com.dlnahub.dlna.model.BrowseResult;
 import com.dlnahub.dlna.model.BrowsableItem;
+import com.dlnahub.exception.DeviceNotFoundException;
+import com.dlnahub.exception.DlnaException;
 import org.jupnp.controlpoint.ActionCallback;
 import org.jupnp.controlpoint.ControlPoint;
 import org.jupnp.model.action.ActionArgumentValue;
@@ -138,7 +140,7 @@ public class ContentBrowseService {
         }
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -185,7 +187,7 @@ public class ContentBrowseService {
                                          String filter, String sortBy) {
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -227,7 +229,7 @@ public class ContentBrowseService {
 
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -846,7 +848,7 @@ public class ContentBrowseService {
     public List<BrowsableItem> browseMetadata(String serverId, String itemId, String filter) {
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -889,7 +891,8 @@ public class ContentBrowseService {
 
         ActionException failure = invocation.getFailure();
         if (failure != null) {
-            throw new RuntimeException("DLNA Browse action failed: " + failure.getMessage(), failure);
+            int errorCode = failure.getErrorCode() > 0 ? failure.getErrorCode() : -1;
+            throw new DlnaException("ContentDirectory action failed: " + failure.getMessage(), errorCode);
         }
     }
 
