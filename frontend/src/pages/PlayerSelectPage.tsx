@@ -5,6 +5,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import { getPlayers } from '@/api/players';
 import { useAppStore } from '@/store/useAppStore';
 import { usePlaybackStore } from '@/store/usePlaybackStore';
+import { useVisibility } from '@/hooks/useVisibility';
 import type { Renderer } from '@/types/player';
 
 export default function PlayerSelectPage() {
@@ -17,6 +18,7 @@ export default function PlayerSelectPage() {
   const [players, setLocalPlayers] = useState<Renderer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isVisible = useVisibility();
 
   useEffect(() => {
     if (!selectedServer) {
@@ -40,12 +42,13 @@ export default function PlayerSelectPage() {
 
   useEffect(() => {
     if (!selectedServer) return;
+    if (!isVisible) return;
     // Player discovery is polled every 10s; fetchPlayers does the setState.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchPlayers();
     const interval = setInterval(fetchPlayers, 10000);
     return () => clearInterval(interval);
-  }, [fetchPlayers, selectedServer]);
+  }, [fetchPlayers, selectedServer, isVisible]);
 
   const handleSelect = (player: Renderer) => {
     if (selectedPlayer?.id !== player.id) {

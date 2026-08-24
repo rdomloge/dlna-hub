@@ -1,6 +1,6 @@
 /**
- * Formats an ISO/W3C datetime (or plain date) for display, e.g.
- * "2023-06-09T13:40:01Z" -> "Jun 2023" (older than this year) or "2023" (older than a year).
+ * Formats an ISO/W3C datetime (or plain date) for display, at a precision that decreases
+ * with age: this month -> "9 Jun", earlier this year -> "Jun 2023", older -> "2022".
  * Returns null when the value is missing or unparseable.
  */
 export function formatDate(value?: string): string | null {

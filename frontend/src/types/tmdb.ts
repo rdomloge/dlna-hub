@@ -18,15 +18,15 @@ export interface TmdbMediaInfo {
   tmdbId: string;
   type: 'movie' | 'tv';
   title: string;
-  overview: string;
-  tagline: string;
+  overview: string | null;
+  tagline: string | null;
   posterPath: string | null;
   backdropPath: string | null;
   posterUrl: string | null;
   backdropUrl: string | null;
-  releaseYear: string;
+  releaseYear: string | null;
   genres: string[];
-  runtime: string;
+  runtime: string | null;
   cast: CastMember[];
   crew: CrewMember[];
 }

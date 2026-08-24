@@ -122,7 +122,7 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 
 ### Routing (`App.tsx`)
 ```
-/         -> HomePage
+/         -> ServerSelectPage
 /servers  -> ServerSelectPage
 /players  -> PlayerSelectPage
 /browse   -> BrowsePage
@@ -134,7 +134,7 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 - **`usePlaybackStore`** (`store/usePlaybackStore.ts`): `status`, `isPlaying`, `currentTime`, `duration`, `volume`
 
 ### API Layer (`api/`)
-- `api/axios.ts` - Axios instance (baseURL: `VITE_API_URL` or `/api`, 10s timeout)
+- `api/axios.ts` - Axios instance (baseURL: `VITE_API_URL` or `/api`, 60s timeout)
 - `api/servers.ts` - `getServers()`
 - `api/players.ts` - `getPlayers()`, `getPlayer()`
 - `api/browse.ts` - `browse()`, `getMetadata()`, `getThumbnail()`
@@ -157,7 +157,6 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 - `LoadingSpinner.tsx` - Spinner component
 
 ### Pages (`pages/`)
-- `HomePage.tsx` - Landing page, CTA to `/servers`
 - `ServerSelectPage.tsx` - Polls servers every 10s, cards with name/manufacturer/model, navigates to `/players`
 - `PlayerSelectPage.tsx` - Polls players every 10s, validates server selected (redirects to `/servers`), navigates to `/browse`
 - `BrowsePage.tsx` - Breadcrumb nav, folder/media listing, pagination, navigates to `/playback` on media tap
@@ -228,7 +227,7 @@ kubectl --kubeconfig 'C:\Users\Ramsay Domloge\k3s.yaml' rollout restart deployme
 | `k8s/secret.yml` | TMDB credentials |
 
 ## Stages
-- Documented in `PLAN.md` and `stage-N.md` files
+- Documented in `plans/archive/PLAN.md` and `plans/archive/stage-N.md` files
 - Complete sequentially (1-8)
 - **Stage 7 complete**: All pages implemented with real API integration
 - **Stage 8 complete**: Kubernetes deployment (backend + frontend images on Docker Hub)

@@ -241,17 +241,16 @@ The frontend's `cleanMediaTitle` utility extracts structured metadata from raw f
 
 ### UI Navigation Flow
 
-1. **Home** (`/`) → landing page with CTA to select a server.
-2. **Server Select** (`/servers`) → polls `/api/servers` every 10 seconds, shows cards with name/manufacturer/model. Selecting a server navigates to `/players`.
-3. **Player Select** (`/players`) → polls `/api/players` every 10 seconds, validates a server is selected (redirects to `/servers` if not). Selecting a player resets playback state and navigates to `/browse`.
-4. **Browse** (`/browse`) → shows breadcrumb navigation, folder/media listing with sort/search controls. Containers navigate deeper; media items navigate to `/playback`. Pagination uses an intersection observer (lazy load). Search debounces at 400 ms.
-5. **Playback** (`/playback`) → polls player status, shows scrubber, playback controls (play/pause/stop/forward/backward), volume slider, and TMDB metadata panel. Auto-plays when arriving from browse with `autoplay: true`.
+1. **Server Select** (`/servers`) → polls `/api/servers` every 10 seconds, shows cards with name/manufacturer/model. Selecting a server navigates to `/players`.
+2. **Player Select** (`/players`) → polls `/api/players` every 10 seconds, validates a server is selected (redirects to `/servers` if not). Selecting a player resets playback state and navigates to `/browse`.
+3. **Browse** (`/browse`) → shows breadcrumb navigation, folder/media listing with sort/search controls. Containers navigate deeper; media items navigate to `/playback`. Pagination uses an intersection observer (lazy load). Search debounces at 400 ms.
+4. **Playback** (`/playback`) → polls player status, shows scrubber, playback controls (play/pause/stop/forward/backward), volume slider, and TMDB metadata panel. Auto-plays when arriving from browse with `autoplay: true`.
 
 ### State Management
 
 - **App store** (Zustand, persisted to localStorage): `selectedServer`, `selectedPlayer`, `servers[]`, `players[]`, `browseState` (current `objectId`, `breadcrumb`, `sortBy`). Browse state resets when a different server is selected.
 - **Playback store** (Zustand, persisted to localStorage): `status`, `isPlaying`, `playingPending`, `currentTime`, `duration`, `volume`, `reconnecting`, `activeItem`. Playback state survives page reloads via `partialize` (only `isPlaying`, `currentTime`, `duration`, `volume`, `activeItem` are persisted).
-- The frontend stores `VITE_API_URL` (defaults to `/api` which Vite proxies to `http://localhost:9100` in dev mode). Axios has a 10-second timeout.
+- The frontend stores `VITE_API_URL` (defaults to `/api` which Vite proxies to `http://localhost:9100` in dev mode). Axios has a 60-second timeout.
 
 ### Error Handling
 
