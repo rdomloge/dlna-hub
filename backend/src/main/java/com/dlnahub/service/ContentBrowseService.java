@@ -1003,11 +1003,9 @@ public class ContentBrowseService {
             }
         }
 
-        if ((artist == null || artist.isEmpty()) && (description == null || description.isEmpty())) {
+        // upnp:artist is the fallback when the server omits dc:creator.
+        if (artist == null || artist.isEmpty()) {
             artist = findNsText(itemEl, "artist");
-        }
-        if (album == null || album.isEmpty()) {
-            album = findNsText(itemEl, "album");
         }
 
         return new BrowsableItem(id, parentId, title, artist, album, duration,
