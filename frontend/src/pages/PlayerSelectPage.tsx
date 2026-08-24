@@ -40,6 +40,8 @@ export default function PlayerSelectPage() {
 
   useEffect(() => {
     if (!selectedServer) return;
+    // Player discovery is polled every 10s; fetchPlayers does the setState.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchPlayers();
     const interval = setInterval(fetchPlayers, 10000);
     return () => clearInterval(interval);

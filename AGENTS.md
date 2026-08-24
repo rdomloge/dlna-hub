@@ -11,6 +11,9 @@ cd frontend && npm run dev          # Start frontend dev server
 cd frontend && npm run build        # Production build
 cd frontend && npm run typecheck    # TypeScript check
 cd backend && mvn spring-boot:run   # Start backend
+cd frontend && npm run lint         # ESLint
+cd frontend && npm test             # Vitest
+cd backend && mvn verify            # Compile + tests + JaCoCo report
 ```
 
 ## Stack

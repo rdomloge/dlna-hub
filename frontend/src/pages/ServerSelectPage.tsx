@@ -29,6 +29,8 @@ export default function ServerSelectPage() {
   }, [setServers]);
 
   useEffect(() => {
+    // Server discovery is polled every 10s; fetchServers does the setState.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchServers();
     const interval = setInterval(fetchServers, 10000);
     return () => clearInterval(interval);

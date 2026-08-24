@@ -95,6 +95,8 @@ export default function PlaybackPage() {
     const hasNewTvHint = parsed.season !== undefined && tmdbSearch.isTvHint !== true;
     if (sameTitle && !hasNewYear && !hasNewTvHint) return;
 
+    // Effect syncs the derived TMDB search params to the changed track title.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTmdbSearch({
       title: parsed.cleansedTitle,
       year: parsed.year,
@@ -108,6 +110,9 @@ export default function PlaybackPage() {
 
     if (!navItem) {
       if (activeItem) {
+        // Effect syncs the local track fields to the active item after a player
+        // reconnect; the navItem handling below is a one-time play request.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setTrackTitle(activeItem.title || '');
         setTrackArtist(activeItem.artist || '');
         setTrackAlbum(activeItem.album || '');
