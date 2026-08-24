@@ -14,7 +14,7 @@ cd backend && mvn spring-boot:run   # Start backend
 ```
 
 ## Stack
-- **Backend**: Java 21, Spring Boot 3.3.5, jupnp 3.0.2 (DLNA/UPnP), Lombok
+- **Backend**: Java 21, Spring Boot 3.3.5, jupnp 3.0.2 (DLNA/UPnP)
 - **Frontend**: Vite 6, React 18, TypeScript, TailwindCSS 3, Zustand, Axios, React Router 6
 - **Package**: `com.dlnahub`
 
@@ -178,7 +178,7 @@ The solution runs as a single pod with 2 containers in the `dlna-hub` namespace 
 - **Backend** (`rdomloge/dlna-hub-backend:latest`): Spring Boot on **port 9200** (overridden via `SERVER_PORT=9200`, default 9100)
 - **Frontend** (`rdomloge/dlna-hub-frontend:latest`): Nginx on **port 9201**, proxies `/api` → `127.0.0.1:9200`
 - **LoadBalancer service**: port **9090** → frontend 9201, accessible on any K3s node IP
-- **Secrets**: `dlna-hub-secret` with `TMDB_API_KEY` and `TMDB_API_READ_ACCESS_TOKEN`
+- **Secrets**: `dlna-hub-secret` with `TMDB_API_READ_ACCESS_TOKEN`
 
 ### kubeconfig
 

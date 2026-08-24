@@ -79,7 +79,6 @@ A Kubernetes Secret (`dlna-hub-secret`) provides TMDB API credentials injected v
 | Key | Purpose |
 |-----|---------|
 | `TMDB_API_READ_ACCESS_TOKEN` | TMDB JWT read access token. The only credential the backend reads. |
-| `TMDB_API_KEY` | TMDB API key. Currently unused by the code; kept for compatibility. |
 
 Credentials live only in `k8s/secret.yml`, which is gitignored. `k8s/secret.example.yml`
 is the committed template.
@@ -204,7 +203,7 @@ kubectl rollout restart deployment/dlna-hub -n dlna-hub
 - The backend searches TMDB's movie and TV databases, scores results by year match (+500) and type hint (+200), and returns up to 3 candidates.
 - For movies, full details (overview, tagline, poster/backdrop URLs, genres, runtime, credits) are fetched. For TV shows, season info and first-season credits are fetched.
 - The frontend displays a media panel with poster, backdrop, cast (up to 6), crew (directors/writers), genres, and runtime. Multiple matches let the user switch between them.
-- TMDB integration is optional: if `TMDB_API_KEY` and `TMDB_API_READ_ACCESS_TOKEN` are not configured, the endpoint returns `{"available": false}`.
+- TMDB integration is optional: if `TMDB_API_READ_ACCESS_TOKEN` is not configured, the endpoint returns `{"available": false}`.
 
 ### Media Title Parsing
 

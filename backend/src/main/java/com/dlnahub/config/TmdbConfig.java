@@ -7,18 +7,9 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "tmdb")
 public class TmdbConfig {
 
-    private String apiKey;
     private String apiReadAccessToken;
     private String imageBaseUrl = "https://image.tmdb.org/t/p/w500";
     private String searchType = "both";
-
-    public String getApiKey() {
-        return apiKey;
-    }
-
-    public void setApiKey(String apiKey) {
-        this.apiKey = apiKey;
-    }
 
     public String getApiReadAccessToken() {
         return apiReadAccessToken;
