@@ -43,6 +43,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status).body(body(e.getMessage(), e.getUpnpErrorCode()));
     }
 
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    public ResponseEntity<Map<String, String>> handleConstraintViolation(
+            jakarta.validation.ConstraintViolationException e) {
+        log.warn("Invalid request parameter: {}", e.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.web.bind.MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, String>> handleInvalidBody(
+            org.springframework.web.bind.MethodArgumentNotValidException e) {
+        String message = e.getBindingResult().getFieldErrors().stream()
+                .map(f -> f.getField() + ": " + f.getDefaultMessage())
+                .findFirst()
+                .orElse("Invalid request body");
+        log.warn("Invalid request body: {}", message);
+        return ResponseEntity.badRequest().body(Map.of("error", message));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException e) {
         log.warn("Bad request: {}", e.getMessage());

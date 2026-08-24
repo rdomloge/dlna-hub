@@ -5,6 +5,9 @@ import com.dlnahub.dlna.model.BrowsableItem;
 import com.dlnahub.exception.DeviceNotFoundException;
 import com.dlnahub.service.ContentBrowseService;
 import com.dlnahub.service.ThumbnailService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,12 +15,14 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
 
 @RestController
+@Validated
 @RequestMapping("/api/servers")
 public class BrowseController {
 
@@ -38,8 +43,8 @@ public class BrowseController {
     public BrowseResult browse(
             @PathVariable String serverId,
             @RequestParam(value = "objectId", defaultValue = "0") String objectId,
-            @RequestParam(value = "index", defaultValue = "0") int index,
-            @RequestParam(value = "count", defaultValue = "50") int count,
+            @RequestParam(value = "index", defaultValue = "0") @Min(0) int index,
+            @RequestParam(value = "count", defaultValue = "50") @Min(1) @Max(500) int count,
             @RequestParam(value = "filter", defaultValue = DEFAULT_FILTER) String filter,
             @RequestParam(value = "sortBy", defaultValue = "") String sortBy) {
         log.debug("Browse request: server={}, objectId={}, index={}, count={}",
@@ -51,9 +56,9 @@ public class BrowseController {
     public BrowseResult search(
             @PathVariable String serverId,
             @RequestParam(value = "containerId", defaultValue = "0") String containerId,
-            @RequestParam String query,
-            @RequestParam(value = "index", defaultValue = "0") int index,
-            @RequestParam(value = "count", defaultValue = "50") int count,
+            @RequestParam @NotBlank String query,
+            @RequestParam(value = "index", defaultValue = "0") @Min(0) int index,
+            @RequestParam(value = "count", defaultValue = "50") @Min(1) @Max(500) int count,
             @RequestParam(value = "filter", defaultValue = DEFAULT_FILTER) String filter,
             @RequestParam(value = "sortBy", defaultValue = "") String sortBy) {
         log.debug("Search request: server={}, container={}, query={}, index={}, count={}",

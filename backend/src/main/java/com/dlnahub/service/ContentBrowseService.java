@@ -167,7 +167,7 @@ public class ContentBrowseService {
         String totalMatchesStr = getOutputString(invocation, "TotalMatches");
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
-        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        int totalMatches = parseTotalMatches(totalMatchesStr);
 
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
         if (dateSort) {
@@ -214,7 +214,7 @@ public class ContentBrowseService {
         String totalMatchesStr = getOutputString(invocation, "TotalMatches");
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
-        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        int totalMatches = parseTotalMatches(totalMatchesStr);
 
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
 
@@ -288,7 +288,7 @@ public class ContentBrowseService {
         String totalMatchesStr = getOutputString(invocation, "TotalMatches");
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
-        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        int totalMatches = parseTotalMatches(totalMatchesStr);
         return new BrowseResult(parseBrowseResult(resultXml, serverId), totalMatches, index, count, updateIdValue);
     }
 
@@ -907,6 +907,17 @@ public class ContentBrowseService {
         Object value = output.getValue();
         if (value == null) return null;
         return value.toString();
+    }
+
+    /** TotalMatches from a misbehaving server may be absent or non-numeric; treat it as 0. */
+    private static int parseTotalMatches(String value) {
+        if (value == null || value.isBlank()) return 0;
+        try {
+            return Math.max(0, Integer.parseInt(value.trim()));
+        } catch (NumberFormatException e) {
+            log.warn("Server returned a non-numeric TotalMatches: {}", value);
+            return 0;
+        }
     }
 
     private String preprocessMalformedXml(String xml) {

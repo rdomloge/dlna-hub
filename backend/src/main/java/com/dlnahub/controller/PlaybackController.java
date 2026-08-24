@@ -61,7 +61,7 @@ public class PlaybackController {
 
     @PostMapping("/{playerId}/seek")
     public ResponseEntity<Map<String, Object>> seek(@PathVariable String playerId,
-                                                      @RequestBody SeekRequestDto request) {
+                                                      @RequestBody @jakarta.validation.Valid SeekRequestDto request) {
         log.info("Seek request for player {} to {} seconds", playerId, request.getSeconds());
         avTransportService.seek(playerId, request.getSeconds());
         return ResponseEntity.ok(Map.of("success", true));
@@ -129,7 +129,7 @@ public class PlaybackController {
 
     @PutMapping("/{playerId}/volume")
     public ResponseEntity<Map<String, Object>> setVolume(@PathVariable String playerId,
-                                                           @RequestBody VolumeRequestDto request) {
+                                                           @RequestBody @jakarta.validation.Valid VolumeRequestDto request) {
         log.info("Set volume request for player {} to {}", playerId, request.getVolume());
         renderingControlService.setVolume(playerId, request.getVolume());
         return ResponseEntity.ok(Map.of("success", true));
