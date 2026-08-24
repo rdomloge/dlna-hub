@@ -19,7 +19,6 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @Validated
@@ -79,33 +78,27 @@ public class BrowseController {
         return items.get(0);
     }
 
-    @GetMapping(value = "/{serverId}/thumbnail/{itemId}", produces = MediaType.IMAGE_JPEG_VALUE)
-    public ResponseEntity<?> thumbnail(
+    @GetMapping("/{serverId}/thumbnail/{itemId}")
+    public ResponseEntity<byte[]> thumbnail(
             @PathVariable String serverId,
             @PathVariable String itemId) {
-        try {
-            String url = thumbnailService.getUrl(serverId, itemId);
-            if (url == null) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("error", "Thumbnail URL not found for item: " + itemId));
-            }
-
-            byte[] data = thumbnailService.fetch(url);
-            if (data == null || data.length == 0) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("error", "Failed to fetch thumbnail"));
-            }
-
-            String contentType = thumbnailService.detectContentType(url, data);
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.parseMediaType(contentType));
-            headers.setCacheControl("max-age=3600");
-
-            return new ResponseEntity<>(data, headers, HttpStatus.OK);
-        } catch (Exception e) {
-            log.error("Thumbnail proxy failed", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", e.getMessage()));
+        String url = thumbnailService.getUrl(serverId, itemId);
+        if (url == null) {
+            // Not an error worth a JSON body: the browser asked for an <img> src. A bare 404
+            // lets the alt text / placeholder render. The content type is decided from the
+            // fetched bytes below, so this handler declares no static `produces` type.
+            throw new DeviceNotFoundException("Thumbnail not found for item: " + itemId);
         }
+
+        byte[] data = thumbnailService.fetch(url);
+        if (data == null || data.length == 0) {
+            throw new DeviceNotFoundException("Thumbnail could not be fetched for item: " + itemId);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(thumbnailService.detectContentType(url, data)));
+        headers.setCacheControl("public, max-age=3600");
+        headers.setContentLength(data.length);
+        return new ResponseEntity<>(data, headers, HttpStatus.OK);
     }
 }
