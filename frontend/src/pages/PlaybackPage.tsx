@@ -57,6 +57,7 @@ export default function PlaybackPage() {
   const pollInFlightRef = useRef(false);
   const isStartingRef = useRef(false);
   const isScrubbingRef = useRef(false);
+  const volumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const navigationState = location.state as {
     item?: BrowsableItem;
@@ -329,18 +330,28 @@ export default function PlaybackPage() {
     }
   };
 
-  const handleVolumeChange = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const VOLUME_DEBOUNCE_MS = 200;
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!selectedPlayer) return;
-    const vol = parseInt(e.target.value);
+    const vol = parseInt(e.target.value, 10);
+    if (Number.isNaN(vol)) return;
+    // Update the slider immediately so it stays responsive, but only send the last
+    // value once the user stops dragging — each send is a UPnP round-trip.
     setVolumeState(vol);
-    try {
-      await setVolume(selectedPlayer.id, vol);
-    } catch {
-      setPlayerError('Failed to set volume');
-    }
+    if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current);
+    volumeTimeoutRef.current = setTimeout(() => {
+      setVolume(selectedPlayer.id, vol).catch(() => {
+        setPlayerError('Failed to set volume');
+      });
+    }, VOLUME_DEBOUNCE_MS);
   };
+
+  useEffect(() => {
+    return () => {
+      if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current);
+    };
+  }, []);
 
   if (!selectedPlayer) {
     return (
