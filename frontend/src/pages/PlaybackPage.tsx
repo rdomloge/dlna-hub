@@ -21,6 +21,7 @@ import { resolvePlayAction } from '@/utils/resolvePlayAction';
 import { reconcileVolume } from '@/utils/reconcileVolume';
 import type { BrowsableItem } from '@/types/media';
 import TmdbMediaPanel from '@/components/TmdbMediaPanel';
+import SubtitlePanel from '@/components/SubtitlePanel';
 
 export default function PlaybackPage() {
   const navigate = useNavigate();
@@ -606,6 +607,19 @@ export default function PlaybackPage() {
             </span>
           </div>
         </div>
+
+        {selectedServer && selectedPlayer && activeItem && (
+          <div className="mt-4">
+            <SubtitlePanel
+              key={activeItem.id}
+              serverId={selectedServer.id}
+              itemId={activeItem.id}
+              playerId={selectedPlayer.id}
+              isPlaying={isPlaying}
+              reportedSeconds={currentTime}
+            />
+          </div>
+        )}
 
         <div className="mt-4">
             <TmdbMediaPanel
