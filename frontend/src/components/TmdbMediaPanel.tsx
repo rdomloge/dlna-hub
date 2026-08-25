@@ -15,6 +15,9 @@ export default function TmdbMediaPanel({ title, year, isTvHint }: TmdbMediaPanel
 
   useEffect(() => {
     if (!title) {
+      // Data-fetch effect: clears the panel state when the title goes away; the
+      // searchTmdb fetch below is the effect's external-system sync.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResults([]);
       setSelectedIndex(0);
       setLoading(false);

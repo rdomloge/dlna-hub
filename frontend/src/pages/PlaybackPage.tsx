@@ -11,11 +11,14 @@ import {
   getStatus,
   setVolume,
 } from '@/api/playback';
+import { getThumbnail } from '@/api/browse';
 import { useAppStore } from '@/store/useAppStore';
 import { usePlaybackStore } from '@/store/usePlaybackStore';
 import { useVisibility } from '@/hooks/useVisibility';
 import { formatTime, parseTime } from '@/utils/formatTime';
 import { cleanMediaTitle, formatSubtitle } from '@/utils/cleanMediaTitle';
+import { resolvePlayAction } from '@/utils/resolvePlayAction';
+import { reconcileVolume } from '@/utils/reconcileVolume';
 import type { BrowsableItem } from '@/types/media';
 import TmdbMediaPanel from '@/components/TmdbMediaPanel';
 
@@ -23,6 +26,7 @@ export default function PlaybackPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedPlayer = useAppStore((s) => s.selectedPlayer);
+  const selectedServer = useAppStore((s) => s.selectedServer);
   const playbackStatus = usePlaybackStore((s) => s.status);
   const setPlaybackStatus = usePlaybackStore((s) => s.setStatus);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
@@ -31,6 +35,8 @@ export default function PlaybackPage() {
   const setPlayingPending = usePlaybackStore((s) => s.setPlayingPending);
   const playingPendingSince = usePlaybackStore((s) => s.playingPendingSince);
   const setPlayingPendingSince = usePlaybackStore((s) => s.setPlayingPendingSince);
+  const userPaused = usePlaybackStore((s) => s.userPaused);
+  const setUserPaused = usePlaybackStore((s) => s.setUserPaused);
   const currentTime = usePlaybackStore((s) => s.currentTime);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const duration = usePlaybackStore((s) => s.duration);
@@ -47,7 +53,6 @@ export default function PlaybackPage() {
   const [trackTitle, setTrackTitle] = useState('');
   const [trackArtist, setTrackArtist] = useState('');
   const [trackAlbum, setTrackAlbum] = useState('');
-  const [thumbnailUrl] = useState('');
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
@@ -57,6 +62,9 @@ export default function PlaybackPage() {
   const pollInFlightRef = useRef(false);
   const isStartingRef = useRef(false);
   const isScrubbingRef = useRef(false);
+  const volumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Volume we last sent, until the renderer confirms it. See reconcileVolume. */
+  const pendingVolumeRef = useRef<number | null>(null);
 
   const navigationState = location.state as {
     item?: BrowsableItem;
@@ -73,6 +81,10 @@ export default function PlaybackPage() {
     isTvHint?: boolean;
   }>({ title: '' });
   const parsedTitle = useMemo(() => cleanMediaTitle(trackTitle), [trackTitle]);
+  const thumbnailUrl = useMemo(() => {
+    if (!item?.thumbnailUrl || !selectedServer) return '';
+    return getThumbnail(selectedServer.id, item.id);
+  }, [item, selectedServer]);
 
   useEffect(() => {
     if (!selectedPlayer) {
@@ -89,6 +101,8 @@ export default function PlaybackPage() {
     const hasNewTvHint = parsed.season !== undefined && tmdbSearch.isTvHint !== true;
     if (sameTitle && !hasNewYear && !hasNewTvHint) return;
 
+    // Effect syncs the derived TMDB search params to the changed track title.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTmdbSearch({
       title: parsed.cleansedTitle,
       year: parsed.year,
@@ -102,6 +116,9 @@ export default function PlaybackPage() {
 
     if (!navItem) {
       if (activeItem) {
+        // Effect syncs the local track fields to the active item after a player
+        // reconnect; the navItem handling below is a one-time play request.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setTrackTitle(activeItem.title || '');
         setTrackArtist(activeItem.artist || '');
         setTrackAlbum(activeItem.album || '');
@@ -123,6 +140,9 @@ export default function PlaybackPage() {
     setTrackArtist(navItem.artist || '');
     setTrackAlbum(navItem.album || '');
     setActiveItem(navItem);
+    // A different item is loaded now, so any pause the user left on the previous one is
+    // no longer something to resume.
+    setUserPaused(false);
     const parsed = cleanMediaTitle(navItem.title || '');
     setParsedSubtitle(formatSubtitle(parsed.year, parsed.season, parsed.episode));
     setTmdbSearch({
@@ -184,16 +204,26 @@ export default function PlaybackPage() {
       } else {
         setPlayerError(null);
       }
-      if (typeof status.volume === 'number') {
-        setVolumeState(status.volume);
+      // The scrubber has isScrubbingRef; this is the same guard for the volume slider,
+      // which sends on a debounce and so can be overtaken by a poll. See reconcileVolume.
+      const volume = reconcileVolume(status.volume, pendingVolumeRef.current);
+      pendingVolumeRef.current = volume.pending;
+      if (volume.accept !== null) {
+        setVolumeState(volume.accept);
       }
 
       if (!isScrubbingRef.current) {
         const pos = parseTime(status.trackPosition || '00:00:00');
-        setCurrentTime(pos);
-
         const dur = parseTime(status.trackDuration || '00:00:00');
-        setDuration(dur);
+        // While the user has it paused the position cannot advance on its own. A renderer
+        // that has quietly dropped the paused stream answers 00:00:00 for both, which would
+        // snap the scrubber back to the start — ignore that and keep the pause point.
+        if (!userPaused || pos > 0) {
+          setCurrentTime(pos);
+        }
+        if (!userPaused || dur > 0) {
+          setDuration(dur);
+        }
       }
 
       if (status.trackTitle) setTrackTitle(status.trackTitle);
@@ -210,31 +240,45 @@ export default function PlaybackPage() {
     } finally {
       pollInFlightRef.current = false;
     }
-  }, [selectedPlayer, setPlaybackStatus, setIsPlaying, setVolumeState, setCurrentTime, setDuration, setPlayingPending, playingPending, playingPendingSince, navigate, setReconnecting]);
+  }, [selectedPlayer, setPlaybackStatus, setIsPlaying, setVolumeState, setCurrentTime, setDuration, setPlayingPending, playingPending, playingPendingSince, navigate, setReconnecting, userPaused]);
+
+  const pollStatusRef = useRef(pollStatus);
+  useEffect(() => {
+    pollStatusRef.current = pollStatus;
+  }, [pollStatus]);
+
+  const pollIntervalMs = (isPlaying || playingPending) ? 1000 : 5000;
 
   useEffect(() => {
-    if (!selectedPlayer) return;
-
-    if (isVisible) {
-      setReconnecting(true);
-      pollStatus();
-      consecutiveErrorsRef.current = 0;
-      const interval = (isPlaying || playingPending) ? 1000 : 5000;
-      pollIntervalRef.current = setInterval(pollStatus, interval);
-    } else {
+    if (!selectedPlayer || !isVisible) {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
+      return;
     }
 
+    // The interval calls through the ref, so a new pollStatus identity (which changes on
+    // every playingPending transition) does not tear the interval down and re-show the
+    // Connecting overlay.
+    pollIntervalRef.current = setInterval(() => pollStatusRef.current(), pollIntervalMs);
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
     };
-  }, [selectedPlayer, isVisible, pollStatus, setReconnecting, isPlaying, playingPending]);
+  }, [selectedPlayer, isVisible, pollIntervalMs]);
+
+  // Fires only when the player changes or the tab becomes visible again — a real
+  // (re)connection, not an ordinary play/pause transition.
+  useEffect(() => {
+    if (!selectedPlayer || !isVisible) return;
+    setReconnecting(true);
+    consecutiveErrorsRef.current = 0;
+    pendingVolumeRef.current = null;
+    pollStatusRef.current();
+  }, [selectedPlayer, isVisible, setReconnecting]);
 
   const handlePlayPause = async () => {
     if (!selectedPlayer) return;
@@ -242,22 +286,35 @@ export default function PlaybackPage() {
       if (isPlaying) {
         await pause(selectedPlayer.id);
         setIsPlaying(false);
+        setUserPaused(true);
         if (playbackStatus) {
           setPlaybackStatus({ ...playbackStatus, state: 'PAUSED_PLAYBACK' });
         }
       } else {
         setPlayingPending(true);
         setPlayingPendingSince(Date.now());
-        if (playbackStatus?.state === 'PAUSED_PLAYBACK') {
+        // Decided in resolvePlayAction so the rule is unit-testable — it is where a
+        // regression once restarted paused playback from 00:00:00.
+        const action = resolvePlayAction({
+          reportedState: playbackStatus?.state,
+          userPaused,
+          hasResource: !!item?.resourceName,
+        });
+        if (action === 'resume') {
+          // The renderer still holds the URI; a bare Play picks up at the pause point.
           await play(selectedPlayer.id, '');
-        } else if (navItem?.resourceName) {
-          await play(selectedPlayer.id, navItem.resourceName, {
-            title: cleanMediaTitle(navItem.title || '').cleansedTitle,
-            artist: navItem.artist,
-            album: navItem.album,
-            duration: navItem.duration,
-            mimeType: navItem.mimeType,
-            protocolInfo: navItem.protocolInfo,
+          setUserPaused(false);
+        } else if (action === 'restart' && item?.resourceName) {
+          // No paused stream to resume (genuine Stop, or a restored session): rebuild it
+          // from the start. `item` is navItem ?? activeItem, so this still works after the
+          // one-time router state has been consumed.
+          await play(selectedPlayer.id, item.resourceName, {
+            title: cleanMediaTitle(item.title || '').cleansedTitle,
+            artist: item.artist,
+            album: item.album,
+            duration: item.duration,
+            mimeType: item.mimeType,
+            protocolInfo: item.protocolInfo,
           });
         } else {
           await play(selectedPlayer.id, '');
@@ -275,6 +332,7 @@ export default function PlaybackPage() {
       await stopApi(selectedPlayer.id);
       setIsPlaying(false);
       setPlayingPending(false);
+      setUserPaused(false);
       if (playbackStatus) {
         setPlaybackStatus({ ...playbackStatus, state: 'STOPPED' });
       }
@@ -326,18 +384,33 @@ export default function PlaybackPage() {
     }
   };
 
-  const handleVolumeChange = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const VOLUME_DEBOUNCE_MS = 200;
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!selectedPlayer) return;
-    const vol = parseInt(e.target.value);
+    const vol = parseInt(e.target.value, 10);
+    if (Number.isNaN(vol)) return;
+    // Update the slider immediately so it stays responsive, but only send the last
+    // value once the user stops dragging — each send is a UPnP round-trip.
     setVolumeState(vol);
-    try {
-      await setVolume(selectedPlayer.id, vol);
-    } catch {
-      setPlayerError('Failed to set volume');
-    }
+    // Ignore polled readings until the renderer reports this value back.
+    pendingVolumeRef.current = vol;
+    if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current);
+    volumeTimeoutRef.current = setTimeout(() => {
+      setVolume(selectedPlayer.id, vol).catch(() => {
+        // The write failed, so the renderer will never confirm it — stop ignoring polls,
+        // otherwise the slider would be frozen on a value that was never applied.
+        pendingVolumeRef.current = null;
+        setPlayerError('Failed to set volume');
+      });
+    }, VOLUME_DEBOUNCE_MS);
   };
+
+  useEffect(() => {
+    return () => {
+      if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current);
+    };
+  }, []);
 
   if (!selectedPlayer) {
     return (
@@ -378,8 +451,9 @@ export default function PlaybackPage() {
             {thumbnailUrl && (
               <img
                 src={thumbnailUrl}
-                alt={trackTitle}
+                alt=""
                 className="w-32 h-32 object-cover rounded-lg mx-auto mb-4"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
               />
             )}
             <h2 className="text-xl font-bold text-gray-900">{parsedTitle.cleansedTitle}</h2>

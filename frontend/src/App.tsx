@@ -15,6 +15,7 @@ function App() {
           <Route path="/players" element={<PlayerSelectPage />} />
           <Route path="/browse" element={<BrowsePage />} />
           <Route path="/playback" element={<PlaybackPage />} />
+          <Route path="*" element={<ServerSelectPage />} />
         </Routes>
       </BrowserRouter>
     </ErrorBoundary>

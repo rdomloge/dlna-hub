@@ -22,7 +22,6 @@ public class DiscoveryManager {
 
     private final ConcurrentHashMap<String, MediaServer> discoveredServers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, RemoteDevice> devicesById = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> subscriptions = new ConcurrentHashMap<>();
 
     void deviceAdded(RemoteDevice device) {
         processDevice(device);
@@ -81,20 +80,6 @@ public class DiscoveryManager {
 
     public Set<MediaServer> getDiscoveredServers() {
         return Collections.unmodifiableSet(discoveredServers.values().parallelStream().collect(Collectors.toSet()));
-    }
-
-    public void subscribe(String serverId) {
-        subscriptions.put(serverId, true);
-        log.info("Subscribed to server: {}", serverId);
-    }
-
-    public void unsubscribe(String serverId) {
-        subscriptions.remove(serverId);
-        log.info("Unsubscribed from server: {}", serverId);
-    }
-
-    public boolean isSubscribed(String serverId) {
-        return subscriptions.containsKey(serverId);
     }
 
     public RemoteDevice getDevice(String serverId) {

@@ -61,7 +61,7 @@ public class PlaybackController {
 
     @PostMapping("/{playerId}/seek")
     public ResponseEntity<Map<String, Object>> seek(@PathVariable String playerId,
-                                                      @RequestBody SeekRequestDto request) {
+                                                      @RequestBody @jakarta.validation.Valid SeekRequestDto request) {
         log.info("Seek request for player {} to {} seconds", playerId, request.getSeconds());
         avTransportService.seek(playerId, request.getSeconds());
         return ResponseEntity.ok(Map.of("success", true));
@@ -83,7 +83,7 @@ public class PlaybackController {
 
     @GetMapping("/{playerId}/status")
     public ResponseEntity<PlaybackStatusDto> status(@PathVariable String playerId) {
-        log.info("Status request for player {}", playerId);
+        log.debug("Status request for player {}", playerId);
         String state = avTransportService.getTransportState(playerId);
         String trackUri;
         String trackDuration;
@@ -122,14 +122,14 @@ public class PlaybackController {
 
     @GetMapping("/{playerId}/volume")
     public ResponseEntity<Map<String, Integer>> getVolume(@PathVariable String playerId) {
-        log.info("Get volume request for player {}", playerId);
+        log.debug("Get volume request for player {}", playerId);
         int volume = renderingControlService.getVolume(playerId);
         return ResponseEntity.ok(Map.of("volume", volume));
     }
 
     @PutMapping("/{playerId}/volume")
     public ResponseEntity<Map<String, Object>> setVolume(@PathVariable String playerId,
-                                                           @RequestBody VolumeRequestDto request) {
+                                                           @RequestBody @jakarta.validation.Valid VolumeRequestDto request) {
         log.info("Set volume request for player {} to {}", playerId, request.getVolume());
         renderingControlService.setVolume(playerId, request.getVolume());
         return ResponseEntity.ok(Map.of("success", true));

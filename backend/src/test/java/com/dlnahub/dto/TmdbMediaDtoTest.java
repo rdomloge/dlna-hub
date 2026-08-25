@@ -8,14 +8,41 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TmdbMediaDtoTest {
 
     @Test
-    void collectionsDefaultToEmpty() {
+    void getGenres_newDto_returnsEmptyList() {
+        // given
         TmdbMediaDto dto = new TmdbMediaDto();
 
-        assertNotNull(dto.getGenres());
-        assertTrue(dto.getGenres().isEmpty());
-        assertNotNull(dto.getCast());
-        assertTrue(dto.getCast().isEmpty());
-        assertNotNull(dto.getCrew());
-        assertTrue(dto.getCrew().isEmpty());
+        // when
+        var genres = dto.getGenres();
+
+        // then
+        assertNotNull(genres);
+        assertTrue(genres.isEmpty());
+    }
+
+    @Test
+    void getCast_newDto_returnsEmptyList() {
+        // given
+        TmdbMediaDto dto = new TmdbMediaDto();
+
+        // when
+        var cast = dto.getCast();
+
+        // then
+        assertNotNull(cast);
+        assertTrue(cast.isEmpty());
+    }
+
+    @Test
+    void getCrew_newDto_returnsEmptyList() {
+        // given
+        TmdbMediaDto dto = new TmdbMediaDto();
+
+        // when
+        var crew = dto.getCrew();
+
+        // then
+        assertNotNull(crew);
+        assertTrue(crew.isEmpty());
     }
 }

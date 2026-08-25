@@ -11,16 +11,86 @@ cd frontend && npm run dev          # Start frontend dev server
 cd frontend && npm run build        # Production build
 cd frontend && npm run typecheck    # TypeScript check
 cd backend && mvn spring-boot:run   # Start backend
+cd frontend && npm run lint         # ESLint
+cd frontend && npm test             # Vitest
+cd backend && mvn verify            # Compile + tests + JaCoCo report
 ```
 
 ## Stack
-- **Backend**: Java 21, Spring Boot 3.3.5, jupnp 3.0.2 (DLNA/UPnP), Lombok
+- **Backend**: Java 21, Spring Boot 3.3.5, jupnp 3.0.2 (DLNA/UPnP)
 - **Frontend**: Vite 6, React 18, TypeScript, TailwindCSS 3, Zustand, Axios, React Router 6
 - **Package**: `com.dlnahub`
 
 ## Testing environment
-In my network I have a Synology NAS as the DLNA server and
- an XBox One as the renderer.
+In my network I have 2 DLNA devices: a Synology NAS (the DLNA server) and
+an XBox One (the renderer). Only the Synology can be expected to be on all
+the time. The XBox is on only sporadically — if it is not discovered, that is
+NOT a failure mode and must not be waited for: assume it is currently off,
+and either verify against the NAS or skip renderer-specific live checks.
+The owner can turn the renderer on when a live test would benefit from it,
+but it must never be assumed to be on: either assume it is off, or ask the
+owner — "Can you turn on the test renderer?" — and wait for the answer
+before continuing. The answer will be "I have turned it on, please
+continue" or "I am not going to turn it on, please find a way to work
+without it"; in the latter case, verify by other means (unit tests, source
+inspection, NAS-only live checks) and report the renderer-specific live
+check as skipped.
+
+## House Java unit testing style
+- Test classes should be named after the class they are testing, with a 'Test' suffix. (`EventDispatcherTest` tests `EventDispatcher`)
+- Test methods should be named [method under test]_[scenario]_[expected outcome] (`validateUser_nullEmail_throwsInvalidDataException`)
+- Test method bodies should be split into 3 clearly demarcated blocks, with comments to show this
+  - `given` - this is the block that setups up the necessary state for testing; mocks, data etc etc
+  - `when` - this is the block that makes the calls to simulate the system
+  - `then` - this is where we verify the end state for correctness
+  - Any of the above can be empty, where necessary - just leave a blank line.
+
+## Test NAS facts (Synology DS918+) — established, do not re-verify
+
+- **The NAS exposes no date data for folders.** This is why date ordering uses the
+  client-side "effective date" workaround (`enrichContainerDates` in
+  `ContentBrowseService`, which computes each folder's latest descendant media date).
+  The workaround is expensive (extra GetSystemUpdateID round-trip + subtree crawls), so it
+  is deliberately gated to date-based sorts only (`isDateSort`, i.e. `sortBy` contains
+  `dc:date`). Every other sort and the metadata endpoint use plain server calls — keep it that way.
+- **`SortCriteria` is silently ignored** (no sort capabilities reported) → sorting happens
+  client-side (`sortItems` / client-sort paths).
+- **`Search` with criteria answers UPnP 501** → in-memory search fallback.
+- The **global `GetSystemUpdateID` bumps every ~30–90 s** with no library changes → the
+  effective-date cache uses a stale-while-revalidate grace (`STALE_GRACE_MS`).
+
+## Security Posture
+- This app targets **closed home networks only** (home media streaming between the owner's
+  own devices). It has **no authentication by design**; security is a secondary concern.
+- Cross-origin access to the backend from public websites is **not a threat model** — the
+  hub is LAN-only. The CORS restriction to the Vite dev origin (`CorsConfig`,
+  `cors.allowed-origins`) is a cheap baseline, not a core control. Do not add web-facing
+  security (auth, CSRF, rate limiting) unless explicitly requested.
+
+## Completion notification (Discord)
+When work on this repo is finished (a task, fix, or deployment is complete),
+notify the owner via Discord with a short summary of what was done. The webhook URL is
+supplied via the `DISCORD_WEBHOOK_URL` environment variable and is never stored in this
+repository — set it in your shell profile. If it is unset, skip the notification.
+
+```
+curl.exe -s -X POST "$DISCORD_WEBHOOK_URL" -H "Content-Type: application/json" -d "{\"content\":\"<short summary>\"}"
+```
+
+Discord accepts a plain `{"content": "..."}` payload. A response of `204 No Content`
+(or a body containing `"id"`) means success; a `4xx` (e.g. 40010/404) means the
+webhook is invalid — report it, don't retry in a loop.
+
+**Sandboxed-agent fallback:** in the agent's sandboxed `pwsh` context, Windows
+Schannel TLS can fail (curl exit 35, `SEC_E_NO_CREDENTIALS`; .NET throws
+"underlying connection closed") even though the network is fine. In that case send
+the same payload with Node instead (its TLS does not use Schannel):
+
+```
+node -e "fetch(process.env.DISCORD_WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:'<short summary>'})}).then(r=>console.log(r.status))"
+```
+
+(A benign libuv assertion on Node exit after a successful 204 can be ignored.)
 
 ## jUPnP docs
 For working with jUPnP, please use documentation at
@@ -38,8 +108,6 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/servers` | List discovered DLNA servers |
-| POST | `/servers/{id}/subscribe` | Subscribe to server events |
-| DELETE | `/servers/{id}/unsubscribe` | Unsubscribe |
 | GET | `/servers/{id}/browse` | Browse content (params: `objectId`, `index`, `count`, `filter`, `sortBy`) |
 | GET | `/servers/{id}/browse/{itemId}/metadata` | Get item metadata |
 | GET | `/servers/{id}/thumbnail/{itemId}` | Thumbnail proxy (image/jpeg) |
@@ -63,7 +131,7 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 
 ### Routing (`App.tsx`)
 ```
-/         -> HomePage
+/         -> ServerSelectPage
 /servers  -> ServerSelectPage
 /players  -> PlayerSelectPage
 /browse   -> BrowsePage
@@ -75,8 +143,8 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 - **`usePlaybackStore`** (`store/usePlaybackStore.ts`): `status`, `isPlaying`, `currentTime`, `duration`, `volume`
 
 ### API Layer (`api/`)
-- `api/axios.ts` - Axios instance (baseURL: `VITE_API_URL` or `/api`, 10s timeout)
-- `api/servers.ts` - `getServers()`, `subscribeToServer()`, `unsubscribeFromServer()`
+- `api/axios.ts` - Axios instance (baseURL: `VITE_API_URL` or `/api`, 60s timeout)
+- `api/servers.ts` - `getServers()`
 - `api/players.ts` - `getPlayers()`, `getPlayer()`
 - `api/browse.ts` - `browse()`, `getMetadata()`, `getThumbnail()`
 - `api/playback.ts` - `play()`, `pause()`, `stop()`, `seek()`, `forward()`, `backward()`, `getStatus()`, `getVolume()`, `setVolume()`
@@ -98,7 +166,6 @@ Don't guess how it's used and don't try decompiling the code - work from the doc
 - `LoadingSpinner.tsx` - Spinner component
 
 ### Pages (`pages/`)
-- `HomePage.tsx` - Landing page, CTA to `/servers`
 - `ServerSelectPage.tsx` - Polls servers every 10s, cards with name/manufacturer/model, navigates to `/players`
 - `PlayerSelectPage.tsx` - Polls players every 10s, validates server selected (redirects to `/servers`), navigates to `/browse`
 - `BrowsePage.tsx` - Breadcrumb nav, folder/media listing, pagination, navigates to `/playback` on media tap
@@ -130,7 +197,7 @@ The solution runs as a single pod with 2 containers in the `dlna-hub` namespace 
 - **Backend** (`rdomloge/dlna-hub-backend:latest`): Spring Boot on **port 9200** (overridden via `SERVER_PORT=9200`, default 9100)
 - **Frontend** (`rdomloge/dlna-hub-frontend:latest`): Nginx on **port 9201**, proxies `/api` → `127.0.0.1:9200`
 - **LoadBalancer service**: port **9090** → frontend 9201, accessible on any K3s node IP
-- **Secrets**: `dlna-hub-secret` with `TMDB_API_KEY` and `TMDB_API_READ_ACCESS_TOKEN`
+- **Secrets**: `dlna-hub-secret` with `TMDB_API_READ_ACCESS_TOKEN`
 
 ### kubeconfig
 
@@ -169,7 +236,7 @@ kubectl --kubeconfig 'C:\Users\Ramsay Domloge\k3s.yaml' rollout restart deployme
 | `k8s/secret.yml` | TMDB credentials |
 
 ## Stages
-- Documented in `PLAN.md` and `stage-N.md` files
+- Documented in `plans/archive/PLAN.md` and `plans/archive/stage-N.md` files
 - Complete sequentially (1-8)
 - **Stage 7 complete**: All pages implemented with real API integration
 - **Stage 8 complete**: Kubernetes deployment (backend + frontend images on Docker Hub)

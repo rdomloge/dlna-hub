@@ -14,6 +14,7 @@ export interface BrowsableItem {
   classType: string;
   description?: string;
   date?: string;
+  effectiveDate?: string;
   resourceName?: string;
 }
 

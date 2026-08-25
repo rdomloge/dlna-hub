@@ -19,12 +19,14 @@ public class BrowsableItem {
     private final String classType;
     private final String description;
     private final String date;
+    private final String effectiveDate;
     private final String resourceName;
 
     public BrowsableItem(String id, String parentId, String title, String artist,
             String album, String duration, String resolution, String mimeType,
             String size, String protocolInfo, boolean isContainer, String thumbnailUrl,
-            String classType, String description, String date, String resourceName) {
+            String classType, String description, String date, String effectiveDate,
+            String resourceName) {
         this.id = id;
         this.parentId = parentId;
         this.title = title;
@@ -40,6 +42,7 @@ public class BrowsableItem {
         this.classType = classType;
         this.description = description;
         this.date = date;
+        this.effectiveDate = effectiveDate;
         this.resourceName = resourceName;
     }
 
@@ -59,5 +62,6 @@ public class BrowsableItem {
     public String getClassType() { return classType; }
     public String getDescription() { return description; }
     public String getDate() { return date; }
+    public String getEffectiveDate() { return effectiveDate; }
     public String getResourceName() { return resourceName; }
 }

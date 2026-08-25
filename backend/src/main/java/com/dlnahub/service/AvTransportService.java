@@ -24,6 +24,8 @@ public class AvTransportService {
 
     private static final Logger log = LoggerFactory.getLogger(AvTransportService.class);
 
+    private static final int SKIP_SECONDS = 10;
+
     private final PlaybackService playbackService;
     private final UpnpServiceManager upnpServiceManager;
 
@@ -49,8 +51,10 @@ public class AvTransportService {
                 return n;
             }
         }
-        log.warn("Argument '{}' not found on action {}. Available: {}",
-                standardName, action.getName(), java.util.Arrays.toString(action.getInputArguments()));
+        if (log.isDebugEnabled()) {
+            log.debug("Argument '{}' not found on action {}. Available: {}",
+                    standardName, action.getName(), java.util.Arrays.toString(action.getInputArguments()));
+        }
         return standardName;
     }
 
@@ -97,8 +101,6 @@ public class AvTransportService {
         if (setUriAction == null) {
             throw new DlnaException("SetAVTransportURI action not supported on this player");
         }
-
-        log.info("SetAVTransportURI inputs: {}", java.util.Arrays.toString(setUriAction.getInputArguments()));
 
         ActionInvocation invocation = new ActionInvocation(setUriAction);
         setInstanceId(invocation, setUriAction);
@@ -156,6 +158,9 @@ public class AvTransportService {
     }
 
     public void seek(String playerId, int seconds) {
+        if (seconds < 0) {
+            throw new DlnaException("Seek target must not be negative: " + seconds);
+        }
         RemoteService service = playbackService.getAvTransportService(playerId);
 
         Action seekAction = service.getAction("Seek");
@@ -174,17 +179,30 @@ public class AvTransportService {
     }
 
     public void forward(String playerId) {
-        String currentPosition = getCurrentPosition(playerId);
-        int currentSeconds = parseTimeSeconds(currentPosition);
-        int newSeconds = currentSeconds + 10;
+        PositionInfo info = readPositionInfoQuietly(playerId);
+        int currentSeconds = parseTimeSeconds(info != null ? info.trackPosition() : null);
+        int durationSeconds = parseTimeSeconds(info != null ? info.trackDuration() : null);
+        int newSeconds = currentSeconds + SKIP_SECONDS;
+        if (durationSeconds > 0) {
+            newSeconds = Math.min(newSeconds, Math.max(0, durationSeconds - 1));
+        }
         seek(playerId, newSeconds);
     }
 
     public void backward(String playerId) {
-        String currentPosition = getCurrentPosition(playerId);
-        int currentSeconds = parseTimeSeconds(currentPosition);
-        int newSeconds = Math.max(0, currentSeconds - 10);
-        seek(playerId, newSeconds);
+        PositionInfo info = readPositionInfoQuietly(playerId);
+        int currentSeconds = parseTimeSeconds(info != null ? info.trackPosition() : null);
+        seek(playerId, Math.max(0, currentSeconds - SKIP_SECONDS));
+    }
+
+    /** GetPositionInfo, or null if the renderer refuses it — skipping must not hard-fail. */
+    private PositionInfo readPositionInfoQuietly(String playerId) {
+        try {
+            return getPositionInfo(playerId);
+        } catch (DlnaException e) {
+            log.warn("Failed to get position info for {}: {}", playerId, e.getMessage());
+            return null;
+        }
     }
 
     public String getTransportState(String playerId) {
@@ -194,9 +212,6 @@ public class AvTransportService {
         if (action == null) {
             throw new DlnaException("GetTransportInfo action not supported on this player");
         }
-
-        log.info("GetTransportInfo inputs: {}", java.util.Arrays.toString(action.getInputArguments()));
-        log.info("GetTransportInfo outputs: {}", java.util.Arrays.toString(action.getOutputArguments()));
 
         ActionInvocation invocation = new ActionInvocation(action);
         setInstanceId(invocation, action);
@@ -214,9 +229,6 @@ public class AvTransportService {
             throw new DlnaException("GetPositionInfo action not supported on this player");
         }
 
-        log.info("GetPositionInfo inputs: {}", java.util.Arrays.toString(action.getInputArguments()));
-        log.info("GetPositionInfo outputs: {}", java.util.Arrays.toString(action.getOutputArguments()));
-
         ActionInvocation invocation = new ActionInvocation(action);
         setInstanceId(invocation, action);
         executeSync(invocation, playerId);
@@ -227,16 +239,6 @@ public class AvTransportService {
                 getOutput(invocation, action, "RelTime"),
                 getOutput(invocation, action, "TrackMetaData")
         );
-    }
-
-    private String getCurrentPosition(String playerId) {
-        try {
-            String trackPosition = getPositionInfo(playerId).trackPosition();
-            return trackPosition != null ? trackPosition : "00:00:00";
-        } catch (DlnaException e) {
-            log.warn("Failed to get current position for {}: {}", playerId, e.getMessage());
-            return "00:00:00";
-        }
     }
 
     private void executeSync(ActionInvocation invocation, String playerId) {
@@ -255,9 +257,10 @@ public class AvTransportService {
 
 
     public static String formatTime(int totalSeconds) {
-        int hours = totalSeconds / 3600;
-        int minutes = (totalSeconds % 3600) / 60;
-        int seconds = totalSeconds % 60;
+        int clamped = Math.max(0, totalSeconds);
+        int hours = clamped / 3600;
+        int minutes = (clamped % 3600) / 60;
+        int seconds = clamped % 60;
         return String.format("%02d:%02d:%02d", hours, minutes, seconds);
     }
 

@@ -4,6 +4,7 @@ import Header from '@/components/Header';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { getServers } from '@/api/servers';
 import { useAppStore } from '@/store/useAppStore';
+import { useVisibility } from '@/hooks/useVisibility';
 import type { MediaServer } from '@/types/server';
 
 export default function ServerSelectPage() {
@@ -14,6 +15,7 @@ export default function ServerSelectPage() {
   const [servers, setLocalServers] = useState<MediaServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isVisible = useVisibility();
 
   const fetchServers = useCallback(async () => {
     try {
@@ -29,10 +31,13 @@ export default function ServerSelectPage() {
   }, [setServers]);
 
   useEffect(() => {
+    if (!isVisible) return;
+    // Server discovery is polled every 10s; fetchServers does the setState.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchServers();
     const interval = setInterval(fetchServers, 10000);
     return () => clearInterval(interval);
-  }, [fetchServers]);
+  }, [fetchServers, isVisible]);
 
   const handleSelect = (server: MediaServer) => {
     setSelectedServer(server);

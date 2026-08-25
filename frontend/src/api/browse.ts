@@ -1,5 +1,5 @@
 import api from './axios';
-import type { BrowsableItem, BrowseResult } from '@/types/media';
+import type { BrowseResult } from '@/types/media';
 
 export type SortOption = '' | 'dc:title' | '-dc:title' | 'dc:creator' | '-dc:creator' | 'dc:date' | '-dc:date';
 
@@ -32,15 +32,7 @@ export function search(
     .then((res) => res.data);
 }
 
-export function getMetadata(
-  serverId: string,
-  itemId: string
-): Promise<BrowsableItem> {
-  return api
-    .get(`/servers/${serverId}/browse/${itemId}/metadata`)
-    .then((res) => res.data);
-}
-
 export function getThumbnail(serverId: string, itemId: string): string {
-  return `/api/servers/${serverId}/thumbnail/${itemId}`;
+  const base = import.meta.env.VITE_API_URL || '/api';
+  return `${base}/servers/${serverId}/thumbnail/${itemId}`;
 }

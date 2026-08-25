@@ -19,22 +19,31 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class TmdbServiceTest {
 
     @Test
-    void springConstructsTheServiceWithItsProductionConstructor() {
-        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            context.registerBean(TmdbConfig.class);
-            context.register(TmdbService.class);
-            context.refresh();
+    void constructor_springContext_exactProductionClass() {
+        // given
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        context.registerBean(TmdbConfig.class);
+        context.register(TmdbService.class);
 
+        // when
+        context.refresh();
+
+        // then
+        try {
             assertEquals(TmdbService.class, context.getBean(TmdbService.class).getClass());
+        } finally {
+            context.close();
         }
     }
 
     @Test
-    void sendsYearAndRanksTheExactYearFirst() {
+    void searchByTitle_movieWithYearHint_sendsYearAndRanksExactFirst() {
+        // given
         TmdbConfig config = new TmdbConfig();
         config.setApiReadAccessToken("test-token");
         RestTemplate restTemplate = new RestTemplate();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        // Detail fetches run in parallel, so the detail requests may arrive in either order.
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).ignoreExpectOrder(true).build();
         TmdbService service = new TmdbService(config, restTemplate);
 
         server.expect(requestTo("https://api.themoviedb.org/3/search/movie?query=Dune&language=en-US&year=1984"))
@@ -50,14 +59,17 @@ class TmdbServiceTest {
         server.expect(requestTo("https://api.themoviedb.org/3/movie/1?language=en-US&append_to_response=credits"))
                 .andRespond(withSuccess(movieDetails(1, "2021-10-22"), MediaType.APPLICATION_JSON));
 
+        // when
         List<TmdbMediaDto> results = service.searchByTitle("Dune", 1984, false);
 
+        // then
         assertEquals(List.of("2", "1"), results.stream().map(TmdbMediaDto::getTmdbId).toList());
         server.verify();
     }
 
     @Test
-    void sendsFirstAirDateYearForTvSearches() {
+    void searchByTitle_tvHint_sendsFirstAirDateYear() {
+        // given
         TmdbConfig config = new TmdbConfig();
         config.setApiReadAccessToken("test-token");
         RestTemplate restTemplate = new RestTemplate();
@@ -67,16 +79,22 @@ class TmdbServiceTest {
         server.expect(requestTo("https://api.themoviedb.org/3/search/tv?query=Succession&language=en-US&first_air_date_year=2018"))
                 .andRespond(withSuccess("{\"results\":[]}", MediaType.APPLICATION_JSON));
 
-        assertEquals(List.of(), service.searchByTitle("Succession", 2018, true));
+        // when
+        List<TmdbMediaDto> results = service.searchByTitle("Succession", 2018, true);
+
+        // then
+        assertEquals(List.of(), results);
         server.verify();
     }
 
     @Test
-    void keepsMovieAndTvCandidatesWhenThereIsNoTypeHint() {
+    void searchByTitle_noTypeHint_keepsMovieAndTvCandidates() {
+        // given
         TmdbConfig config = new TmdbConfig();
         config.setApiReadAccessToken("test-token");
         RestTemplate restTemplate = new RestTemplate();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        // Detail fetches run in parallel, so the detail requests may arrive in either order.
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).ignoreExpectOrder(true).build();
         TmdbService service = new TmdbService(config, restTemplate);
 
         server.expect(requestTo("https://api.themoviedb.org/3/search/movie?query=The+Office&language=en-US"))
@@ -88,10 +106,45 @@ class TmdbServiceTest {
         server.expect(requestTo("https://api.themoviedb.org/3/tv/2?language=en-US&append_to_response=seasons"))
                 .andRespond(withSuccess("{\"id\":2,\"name\":\"The Office\",\"first_air_date\":\"2005-03-24\",\"genres\":[]}", MediaType.APPLICATION_JSON));
 
+        // when
         List<TmdbMediaDto> results = service.searchByTitle("The Office", null, null);
 
+        // then
         assertEquals(List.of("movie", "tv"), results.stream().map(TmdbMediaDto::getType).toList());
         server.verify();
+    }
+
+    @Test
+    void searchByTitle_repeatedSameArguments_noNewHttpCalls() {
+        // given
+        TmdbConfig config = new TmdbConfig();
+        config.setApiReadAccessToken("test-token");
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        TmdbService service = new TmdbService(config, restTemplate);
+
+        server.expect(requestTo("https://api.themoviedb.org/3/search/movie?query=Dune&language=en-US"))
+                .andRespond(withSuccess("""
+                        {"results":[{"id":1,"title":"Dune","release_date":"2021-10-22"}]}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.themoviedb.org/3/search/tv?query=Dune&language=en-US"))
+                .andRespond(withSuccess("{\"results\":[]}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.themoviedb.org/3/movie/1?language=en-US&append_to_response=credits"))
+                .andRespond(withSuccess(movieDetails(1, "2021-10-22"), MediaType.APPLICATION_JSON));
+
+        // when
+        List<TmdbMediaDto> first = service.searchByTitle("Dune", null, null);
+        server.verify();
+
+        // Second call with the same arguments: no expectations are registered, so any HTTP
+        // call issued by it would make verify() fail — the mock is invoked the same total
+        // number of times after the second call as after the first.
+        List<TmdbMediaDto> second = service.searchByTitle("Dune", null, null);
+        server.verify();
+
+        // then
+        assertEquals(List.of("1"), first.stream().map(TmdbMediaDto::getTmdbId).toList());
+        assertEquals(first, second);
     }
 
     private static String movieDetails(int id, String releaseDate) {

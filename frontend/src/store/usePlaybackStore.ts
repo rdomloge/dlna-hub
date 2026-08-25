@@ -12,6 +12,17 @@ interface PlaybackState {
   setPlayingPending: (pending: boolean) => void;
   playingPendingSince: number;
   setPlayingPendingSince: (ts: number) => void;
+  /**
+   * True from the moment the user presses pause until they stop, start a different item, or
+   * successfully resume. Deliberately NOT persisted: it records an intent within one session,
+   * and a reload means we no longer know what the renderer is holding.
+   *
+   * It exists because the renderer's reported transport state is not a reliable proxy for
+   * "the user paused this" — the Xbox stops reporting PAUSED_PLAYBACK a few seconds after a
+   * pause while still holding the URI. See bugs/pause-then-unpause-restarts-from-beginning.
+   */
+  userPaused: boolean;
+  setUserPaused: (paused: boolean) => void;
   currentTime: number;
   setCurrentTime: (time: number) => void;
   duration: number;
@@ -36,6 +47,8 @@ export const usePlaybackStore = create<PlaybackState>()(
       setPlayingPending: (pending) => set({ playingPending: pending }),
       playingPendingSince: 0,
       setPlayingPendingSince: (ts) => set({ playingPendingSince: ts }),
+      userPaused: false,
+      setUserPaused: (paused) => set({ userPaused: paused }),
       currentTime: 0,
       setCurrentTime: (time) => set({ currentTime: time }),
       duration: 0,
@@ -51,6 +64,7 @@ export const usePlaybackStore = create<PlaybackState>()(
         isPlaying: false,
         playingPending: false,
         playingPendingSince: 0,
+        userPaused: false,
         currentTime: 0,
         duration: 0,
         volume: 50,

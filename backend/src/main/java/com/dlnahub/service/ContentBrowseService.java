@@ -3,6 +3,8 @@ package com.dlnahub.service;
 import com.dlnahub.dlna.UpnpServiceManager;
 import com.dlnahub.dlna.model.BrowseResult;
 import com.dlnahub.dlna.model.BrowsableItem;
+import com.dlnahub.exception.DeviceNotFoundException;
+import com.dlnahub.exception.DlnaException;
 import org.jupnp.controlpoint.ActionCallback;
 import org.jupnp.controlpoint.ControlPoint;
 import org.jupnp.model.action.ActionArgumentValue;
@@ -35,6 +37,7 @@ import java.time.DateTimeException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -61,6 +64,107 @@ public class ContentBrowseService {
      */
     private final Map<String, Boolean> serverSortSupport = new ConcurrentHashMap<>();
 
+    /* Container effective dates (see the section below): budget and cache limits. */
+    private static final int CRAWL_PAGE_SIZE = 500;
+    private static final int CRAWL_MAX_TOTAL_ITEMS = 50_000;   // hard cap for a single subtree crawl
+    private static final int CRAWL_MAX_DEPTH = 50;
+    private static final int ENRICH_MAX_ITEMS_PER_CALL = 2_000; // items visited per enrich call (latency budget)
+    private static final int ENRICH_MAX_CRAWLS_PER_CALL = 300;  // top-level subtrees crawled per enrich call
+    private static final int CACHE_MAX_ENTRIES = 10_000;        // per-server cap; beyond it the cache is cleared
+    private static final long NO_UPDATE_ID_TTL_MS = 10 * 60 * 1000L; // freshness fallback when no SystemUpdateID
+
+
+    /**
+     * Grace period for SystemUpdateID churn. Measured on the test Synology NAS: the global
+     * SystemUpdateID bumps roughly every 30-90 s with zero library changes, so strict
+     * updateId equality would invalidate the whole cache between nearly every request.
+     * Entries are therefore kept usable for a short time after the updateId changes
+     * (stale-while-revalidate); a complete re-crawl under the new id replaces them.
+     */
+    private static final long STALE_GRACE_MS = 2 * 60 * 1000L;
+
+    /** container-id -> latest descendant media date, keyed per server and invalidated by SystemUpdateID. */
+    private final Map<String, Map<String, ContainerDateEntry>> containerDateCache = new ConcurrentHashMap<>();
+
+    /** Per-container crawl locks, so two concurrent requests do not crawl the same subtree twice. */
+    private final Map<String, Object> containerDateLocks = new ConcurrentHashMap<>();
+
+    private static final int MAX_TRACKED_CONTAINER_LOCKS = 4_096;
+
+    private Object crawlLock(String serverId, String containerId) {
+        if (containerDateLocks.size() > MAX_TRACKED_CONTAINER_LOCKS) {
+            // Bound the lock map. Dropping locks is safe: the worst case is two requests
+            // crawling the same subtree concurrently, which is correct, just wasteful.
+            containerDateLocks.clear();
+        }
+        return containerDateLocks.computeIfAbsent(serverId + "/" + containerId, k -> new Object());
+    }
+
+    record ContainerDateEntry(String updateId, Instant latestDate, long computedAt) {
+    }
+
+    private static final class CrawlResult {
+        final Instant date;
+        final boolean complete;
+
+        CrawlResult(Instant date, boolean complete) {
+            this.date = date;
+            this.complete = complete;
+        }
+    }
+
+    private static final class CrawlBudget {
+        final int max;
+        int visited;
+
+        CrawlBudget(int max) {
+            this.max = max;
+        }
+
+        boolean exhausted() {
+            return visited >= max;
+        }
+    }
+
+    /**
+     * Fully-fetched, sorted result sets, so that paging through a client-sorted container or
+     * an in-memory search does not re-fetch the whole container for every 50-item page.
+     * Deliberately short-lived: this is a paging aid, not a library cache. Cross-check with
+     * containerDateCache, which has its own (SystemUpdateID-based) invalidation.
+     */
+    private static final long SORTED_PAGE_CACHE_TTL_MS = 60_000L;
+    private static final int SORTED_PAGE_CACHE_MAX_ENTRIES = 32;
+
+    private record SortedSet(List<BrowsableItem> items, long computedAt) {
+    }
+
+    private final Map<String, SortedSet> sortedPageCache = new ConcurrentHashMap<>();
+
+    private static String sortedCacheKey(String serverId, String scope, String objectId, String sortBy) {
+        return serverId + "\u0000" + scope + "\u0000" + objectId + "\u0000" + (sortBy == null ? "" : sortBy);
+    }
+
+    /** Returns the cached set if it is still within its TTL, otherwise null. */
+    private List<BrowsableItem> cachedSortedSet(String key) {
+        SortedSet cached = sortedPageCache.get(key);
+        if (cached == null) return null;
+        if (System.currentTimeMillis() - cached.computedAt() >= SORTED_PAGE_CACHE_TTL_MS) {
+            sortedPageCache.remove(key);
+            return null;
+        }
+        return cached.items();
+    }
+
+    private void cacheSortedSet(String key, List<BrowsableItem> items) {
+        if (sortedPageCache.size() >= SORTED_PAGE_CACHE_MAX_ENTRIES) {
+            // Drop the oldest entry rather than clearing everything, so an active browse keeps its set.
+            sortedPageCache.entrySet().stream()
+                    .min(Comparator.comparingLong(e -> e.getValue().computedAt()))
+                    .ifPresent(e -> sortedPageCache.remove(e.getKey()));
+        }
+        sortedPageCache.put(key, new SortedSet(List.copyOf(items), System.currentTimeMillis()));
+    }
+
     @Autowired
     public ContentBrowseService(ServerBrowseService serverBrowseService,
                                  ThumbnailService thumbnailService,
@@ -72,18 +176,32 @@ public class ContentBrowseService {
 
     public BrowseResult browse(String serverId, String objectId, int index, int count,
                                String filter, String sortBy) {
+        // Container effective-date enrichment is a date-ordering workaround: it costs an extra
+        // GetSystemUpdateID call (and possibly subtree crawls), so it only runs when the
+        // requested order is by date. Every other sort uses the server's order as-is.
+        boolean dateSort = isDateSort(sortBy);
         boolean clientSort = needsClientSort(sortBy) && !supportsServerSort(serverId);
         if (clientSort) {
             // Server does not sort on its side (e.g. Synology silently ignores SortCriteria) —
-            // we fetch the whole container, sort in memory and page locally. See sortItems().
-            String effectiveFilter = sortBy.contains("dc:date") ? ensureFilterField(filter, "dc:date") : filter;
-            List<BrowsableItem> all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
-            sortItems(all, sortBy);
+            // we fetch the whole container, sort in memory and page locally. The sorted set is
+            // cached briefly so that scrolling does not re-fetch the container for every page.
+            String cacheKey = sortedCacheKey(serverId, "browse", objectId, sortBy);
+            List<BrowsableItem> all = cachedSortedSet(cacheKey);
+            if (all == null) {
+                String effectiveFilter = dateSort ? ensureFilterField(filter, "dc:date") : filter;
+                all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
+                if (dateSort) {
+                    all = enrichContainerDates(serverId, all);
+                }
+                all = new ArrayList<>(all);
+                sortItems(all, sortBy);
+                cacheSortedSet(cacheKey, all);
+            }
             return pagedResult(serverId, all, index, count);
         }
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -110,9 +228,12 @@ public class ContentBrowseService {
         String totalMatchesStr = getOutputString(invocation, "TotalMatches");
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
-        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        int totalMatches = parseTotalMatches(totalMatchesStr);
 
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
+        if (dateSort) {
+            items = enrichContainerDates(serverId, items);
+        }
 
         for (BrowsableItem item : items) {
             if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
@@ -127,7 +248,7 @@ public class ContentBrowseService {
                                          String filter, String sortBy) {
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -154,7 +275,7 @@ public class ContentBrowseService {
         String totalMatchesStr = getOutputString(invocation, "TotalMatches");
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
-        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        int totalMatches = parseTotalMatches(totalMatchesStr);
 
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
 
@@ -169,7 +290,7 @@ public class ContentBrowseService {
 
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -181,8 +302,17 @@ public class ContentBrowseService {
         if (searchAction != null) {
             try {
                 if (needsClientSort(sortBy) && !supportsServerSort(serverId)) {
-                    List<BrowsableItem> all = fetchAllSearchResults(serverId, contentDir, containerId, query, filter, sortBy);
-                    sortItems(all, sortBy);
+                    String cacheKey = sortedCacheKey(serverId, "searchAction:" + query.toLowerCase(), containerId, sortBy);
+                    List<BrowsableItem> all = cachedSortedSet(cacheKey);
+                    if (all == null) {
+                        all = fetchAllSearchResults(serverId, contentDir, containerId, query, filter, sortBy);
+                        if (isDateSort(sortBy)) {
+                            all = enrichContainerDates(serverId, all);
+                        }
+                        all = new ArrayList<>(all);
+                        sortItems(all, sortBy);
+                        cacheSortedSet(cacheKey, all);
+                    }
                     return pagedResult(serverId, all, index, count);
                 }
                 return searchViaAction(serverId, contentDir, containerId, query, index, count, filter, sortBy);
@@ -225,28 +355,33 @@ public class ContentBrowseService {
         String totalMatchesStr = getOutputString(invocation, "TotalMatches");
         String updateIdValue = getOutputString(invocation, "UpdateID");
 
-        int totalMatches = totalMatchesStr != null ? Integer.parseInt(totalMatchesStr) : 0;
+        int totalMatches = parseTotalMatches(totalMatchesStr);
         return new BrowseResult(parseBrowseResult(resultXml, serverId), totalMatches, index, count, updateIdValue);
     }
 
+    /**
+     * Filters the direct children of the container the user is currently looking at.
+     *
+     * Deliberately NOT recursive. A subtree walk was tried and reverted: the browse list shows
+     * only a title per row, with no room for a path, so hits from three folders down read as
+     * items the current folder does not contain — and tapping one appended it to the current
+     * breadcrumb, inventing a parent/child relationship that does not exist. Searching from the
+     * library root also crawled the whole NAS on every distinct query. Search here narrows what
+     * is on screen; that is the behaviour the UI can actually present.
+     *
+     * Note this differs from the ContentDirectory Search action (searchViaAction), which is
+     * subtree-scoped by the UPnP spec and cannot be asked for direct children only. Servers that
+     * answer Search therefore still search recursively. The test Synology answers UPnP 501, so
+     * this path is the one in use here.
+     */
     private BrowseResult searchInMemory(String serverId, String containerId, String query, int index, int count,
                                          String filter, String sortBy) {
-        List<BrowsableItem> allItems = new ArrayList<>();
-        int startIdx = 0;
-        int pageSize = 500;
-
-        while (true) {
-            BrowseResult page = browseInternal(serverId, containerId, startIdx, pageSize, filter, sortBy);
-            allItems.addAll(page.getItems());
-            if (page.getItems().size() < pageSize) {
-                break;
-            }
-            startIdx += page.getItems().size();
-            if (startIdx > 50000) {
-                log.warn("In-memory search exceeded item limit for server={}, container={}", serverId, containerId);
-                break;
-            }
+        String cacheKey = sortedCacheKey(serverId, "search:" + query.toLowerCase(), containerId, sortBy);
+        List<BrowsableItem> cached = cachedSortedSet(cacheKey);
+        if (cached != null) {
+            return pagedResult(serverId, cached, index, count);
         }
+        List<BrowsableItem> allItems = fetchAllChildren(serverId, containerId, filter, sortBy);
 
         String q = query.toLowerCase();
         List<BrowsableItem> matching = allItems.stream()
@@ -258,22 +393,15 @@ public class ContentBrowseService {
                 })
                 .collect(java.util.stream.Collectors.toList());
 
+        if (isDateSort(sortBy)) {
+            matching = enrichContainerDates(serverId, matching);
+        }
         if (needsClientSort(sortBy)) {
             sortItems(matching, sortBy);
         }
 
-        int total = matching.size();
-        int from = Math.min(index, total);
-        int to = Math.min(from + count, total);
-        List<BrowsableItem> paged = matching.subList(from, to);
-
-        for (BrowsableItem item : paged) {
-            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
-                thumbnailService.cache(serverId, item.getId(), item.getThumbnailUrl());
-            }
-        }
-
-        return new BrowseResult(paged, total, index, count, "");
+        cacheSortedSet(cacheKey, matching);
+        return pagedResult(serverId, matching, index, count);
     }
 
     private String buildSearchCriteria(String query) {
@@ -291,6 +419,15 @@ public class ContentBrowseService {
 
     private static boolean needsClientSort(String sortBy) {
         return sortBy != null && !sortBy.isEmpty();
+    }
+
+    /**
+     * Whether the requested sort orders by date (dc:date or -dc:date). Container
+     * effective-date enrichment is a workaround for date ordering only and is skipped
+     * for every other sort, which uses the server's order as-is.
+     */
+    static boolean isDateSort(String sortBy) {
+        return sortBy != null && sortBy.contains("dc:date");
     }
 
     /**
@@ -385,9 +522,7 @@ public class ContentBrowseService {
     private static boolean parseSortCaps(String responseBody) {
         if (responseBody == null || responseBody.trim().isEmpty()) return false;
         try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
+            DocumentBuilder builder = secureDocumentBuilderFactory(false).newDocumentBuilder();
             Document doc = builder.parse(new java.io.ByteArrayInputStream(responseBody.getBytes("UTF-8")));
 
             // Look for SortCaps anywhere in the response (namespace-agnostic)
@@ -465,8 +600,10 @@ public class ContentBrowseService {
 
     /**
      * Sorts items in place by the given UPnP sort criterion (dc:title, dc:creator, dc:date,
-     * optionally negated with a leading '-'). Containers are kept before items; entries with
-     * missing values are placed last regardless of direction. Unknown criteria fall back to title.
+     * optionally negated with a leading '-'). Containers are kept before items; for dc:date,
+     * containers sort by their effective (newest descendant media) date when known, otherwise
+     * by their own date; entries with missing values are placed last regardless of direction.
+     * Unknown criteria fall back to title.
      */
     static void sortItems(List<BrowsableItem> items, String sortBy) {
         if (items == null || items.isEmpty() || sortBy == null || sortBy.isEmpty()) {
@@ -512,8 +649,8 @@ public class ContentBrowseService {
 
     private static Comparator<BrowsableItem> dateComparator(boolean desc) {
         return (a, b) -> {
-            Instant da = parseDateInstant(a.getDate());
-            Instant db = parseDateInstant(b.getDate());
+            Instant da = sortDate(a);
+            Instant db = sortDate(b);
             if (da == null && db == null) return 0;
             if (da == null) return 1;
             if (db == null) return -1;
@@ -550,10 +687,246 @@ public class ContentBrowseService {
         return null;
     }
 
+    /* ##################################################################################################### */
+    /* Container effective dates                                                                            */
+    /* ESTABLISHED FACT (do not re-verify; see AGENTS.md "Test NAS facts"): the test Synology NAS exposes   */
+    /* no date data for folders, so a plain date sort would push every folder to the bottom. We therefore   */
+    /* compute each container's "effective date": the latest dc:date among all of its descendant media      */
+    /* items. Computing it requires recursively crawling                                                   */
+    /* the container's subtree with BrowseDirectChildren, so results are cached per (server, container) and */
+    /* invalidated by the ContentDirectory's global SystemUpdateID: while it is unchanged, cached dates are */
+    /* trusted; when it changes, dates are recomputed for containers as they are encountered. (The cheaper  */
+    /* Search-based alternative was investigated first: the testable NAS answers UPnP 501 to any Search     */
+    /* criteria and reports no search capabilities, so the Browse fallback is the only viable path.)        */
+    /* The enrichment only runs for date-based sorts (isDateSort); other sorts use the server's order.      */
+    /* ##################################################################################################### */
+
+    /**
+     * Returns the ContentDirectory's global SystemUpdateID for a server, or null if the server
+     * does not expose it. Used as the cache-invalidation key for container effective dates.
+     * Note: the UpdateID echoed by individual Browse responses is unreliable for sub-containers
+     * (the testable NAS answers 0/1 there), so the global value is used instead.
+     */
+    private String getSystemUpdateId(String serverId) {
+        try {
+            RemoteDevice device = serverBrowseService.getDevice(serverId);
+            if (device == null) return null;
+            RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
+            if (contentDir == null) return null;
+            Action action = contentDir.getAction("GetSystemUpdateID");
+            if (action == null) return null;
+            ActionInvocation invocation = new ActionInvocation(action);
+            executeSync(invocation);
+            return getOutputString(invocation, "Id");
+        } catch (Exception e) {
+            log.warn("GetSystemUpdateID failed for server {}: {}", serverId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * A cache entry is fresh when it was computed under the current SystemUpdateID. Because some
+     * servers (measured: the test Synology NAS) bump their global SystemUpdateID every 30-90 s
+     * without any library change, an entry is also kept usable for STALE_GRACE_MS after the id
+     * changed — stale-while-revalidate: the next request re-crawls and replaces it. When the
+     * server reports no SystemUpdateID at all, the fallback TTL applies.
+     */
+    static boolean isFresh(ContainerDateEntry entry, String updateId, long now) {
+        if (entry == null) return false;
+        long age = now - entry.computedAt();
+        if (updateId != null && !updateId.isEmpty()) {
+            return updateId.equals(entry.updateId()) || age < STALE_GRACE_MS;
+        }
+        return age < NO_UPDATE_ID_TTL_MS;
+    }
+
+    /**
+     * The effective date of a set of direct children: files contribute their own dc:date,
+     * sub-containers contribute their (already computed) effective dates. Returns the latest of
+     * all of them, or null when no descendant has a date.
+     */
+    static Instant effectiveDate(List<BrowsableItem> children, Map<String, Instant> subContainerDates) {
+        Instant latest = null;
+        for (BrowsableItem child : children) {
+            Instant d = child.isContainer()
+                    ? (subContainerDates != null ? subContainerDates.get(child.getId()) : null)
+                    : parseDateInstant(child.getDate());
+            if (d != null && (latest == null || d.isAfter(latest))) {
+                latest = d;
+            }
+        }
+        return latest;
+    }
+
+    /**
+     * The date used by dc:date sorting: containers sort by their effective (newest descendant
+     * media) date when known, otherwise by their own (often missing) date.
+     */
+    static Instant sortDate(BrowsableItem item) {
+        if (item.isContainer() && item.getEffectiveDate() != null) {
+            return parseDateInstant(item.getEffectiveDate());
+        }
+        return parseDateInstant(item.getDate());
+    }
+
+    /** Returns a copy of the item with its effective (newest-descendant-media) date attached. */
+    static BrowsableItem withEffectiveDate(BrowsableItem item, Instant date) {
+        return new BrowsableItem(item.getId(), item.getParentId(), item.getTitle(), item.getArtist(),
+                item.getAlbum(), item.getDuration(), item.getResolution(), item.getMimeType(),
+                item.getSize(), item.getProtocolInfo(), item.isContainer(), item.getThumbnailUrl(),
+                item.getClassType(), item.getDescription(), item.getDate(),
+                date != null ? date.toString() : null, item.getResourceName());
+    }
+
+    /**
+     * Enriches container items with their effective dates so date sorting and date display work
+     * for folders. Only invoked for date-ordering requests (see isDateSort): every call costs a
+     * GetSystemUpdateID round-trip (plus possibly subtree crawls), so non-date sorts must not
+     * pay for it. Fresh cached dates are reused; otherwise up to a per-call budget of the
+     * subtree is crawled, so the first visit stays responsive and the cache warms up across
+     * successive requests. Never fails the browse: on any error the unenriched list is returned.
+     */
+    List<BrowsableItem> enrichContainerDates(String serverId, List<BrowsableItem> items) {
+        if (items == null || items.isEmpty()) {
+            return items;
+        }
+        boolean hasContainer = false;
+        for (BrowsableItem item : items) {
+            if (item.isContainer()) { hasContainer = true; break; }
+        }
+        if (!hasContainer) {
+            return items;
+        }
+
+        String updateId = getSystemUpdateId(serverId);
+        long now = System.currentTimeMillis();
+
+        try {
+            Map<String, ContainerDateEntry> cache =
+                    containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
+            CrawlBudget budget = new CrawlBudget(ENRICH_MAX_ITEMS_PER_CALL);
+            int crawls = 0;
+            List<BrowsableItem> out = new ArrayList<>(items.size());
+            for (BrowsableItem item : items) {
+                if (!item.isContainer()) {
+                    out.add(item);
+                    continue;
+                }
+                ContainerDateEntry entry = cache.get(item.getId());
+                if (!isFresh(entry, updateId, now) && crawls < ENRICH_MAX_CRAWLS_PER_CALL) {
+                    crawls++;
+                    entry = crawlAndCache(serverId, item.getId(), updateId, now, budget, cache, entry);
+                }
+                if (entry != null && entry.latestDate() != null) {
+                    out.add(withEffectiveDate(item, entry.latestDate()));
+                } else {
+                    out.add(item);
+                }
+            }
+            if (cache.size() > CACHE_MAX_ENTRIES) {
+                cache.clear();
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("Container date enrichment failed for server {}: {}", serverId, e.getMessage());
+            return items;
+        }
+    }
+
+    /**
+     * Crawls one container's subtree under a per-container lock, so two concurrent requests do
+     * not duplicate the work. The lock covers only this container's crawl — never the whole
+     * enrichment pass, which would serialise every date-sorted browse of the server.
+     * Re-checks the cache inside the lock: the request we queued behind may have just filled it.
+     */
+    private ContainerDateEntry crawlAndCache(String serverId, String containerId, String updateId,
+                                             long now, CrawlBudget budget,
+                                             Map<String, ContainerDateEntry> cache,
+                                             ContainerDateEntry stale) {
+        synchronized (crawlLock(serverId, containerId)) {
+            ContainerDateEntry current = cache.get(containerId);
+            if (isFresh(current, updateId, System.currentTimeMillis())) {
+                return current;
+            }
+            CrawlResult result = crawlSubtree(serverId, containerId, updateId, 0, budget, cache);
+            // Only complete crawls replace the entry; partial (budget-exhausted) results keep
+            // the previous one so the last known date keeps being served while a later request
+            // finishes the subtree.
+            if (result.complete) {
+                ContainerDateEntry fresh = new ContainerDateEntry(updateId, result.date, now);
+                cache.put(containerId, fresh);
+                return fresh;
+            }
+            return stale;
+        }
+    }
+
+    /**
+     * Recursively crawls a container's subtree (BrowseDirectChildren, paged) and computes the
+     * effective date of the container and of every container encountered along the way. Every
+     * fully crawled container is stored in the cache under the given SystemUpdateID. Returns an
+     * incomplete result (not to be cached) when the budget is exhausted or the depth cap hit.
+     */
+    private CrawlResult crawlSubtree(String serverId, String containerId, String updateId, int depth,
+                                      CrawlBudget budget, Map<String, ContainerDateEntry> cache) {
+        if (depth > CRAWL_MAX_DEPTH || budget.exhausted()) {
+            return new CrawlResult(null, false);
+        }
+
+        List<BrowsableItem> children = fetchCrawlChildren(serverId, containerId, budget);
+
+        Map<String, Instant> subDates = new HashMap<>();
+        for (BrowsableItem child : children) {
+            if (!child.isContainer()) {
+                continue;
+            }
+            ContainerDateEntry existing = cache.get(child.getId());
+            if (isFresh(existing, updateId, System.currentTimeMillis())) {
+                subDates.put(child.getId(), existing.latestDate());
+                continue;
+            }
+            CrawlResult childResult = crawlSubtree(serverId, child.getId(), updateId, depth + 1, budget, cache);
+            if (childResult.complete) {
+                cache.put(child.getId(), new ContainerDateEntry(updateId, childResult.date, System.currentTimeMillis()));
+                subDates.put(child.getId(), childResult.date);
+            }
+        }
+
+        // If the budget ran out mid-crawl the children list (or a sub-date) is partial:
+        // the result is then only an upper bound and must not be cached.
+        boolean complete = !budget.exhausted();
+        return new CrawlResult(effectiveDate(children, subDates), complete);
+    }
+
+    /**
+     * Fetches all direct children of a container in pages, counting every visited item against
+     * the shared budget. Stops early when the budget is exhausted (the result is then partial).
+     */
+    private List<BrowsableItem> fetchCrawlChildren(String serverId, String containerId, CrawlBudget budget) {
+        List<BrowsableItem> all = new ArrayList<>();
+        int start = 0;
+        while (!budget.exhausted()) {
+            BrowseResult page = browseInternal(serverId, containerId, start, CRAWL_PAGE_SIZE,
+                    "dc:title,upnp:class,dc:date", "");
+            for (BrowsableItem item : page.getItems()) {
+                budget.visited++;
+                all.add(item);
+            }
+            if (page.getItems().size() < CRAWL_PAGE_SIZE) {
+                break;
+            }
+            start += page.getItems().size();
+            if (start >= CRAWL_MAX_TOTAL_ITEMS) {
+                break;
+            }
+        }
+        return all;
+    }
+
     public List<BrowsableItem> browseMetadata(String serverId, String itemId, String filter) {
         RemoteDevice device = serverBrowseService.getDevice(serverId);
         if (device == null) {
-            throw new IllegalArgumentException("Server not found: " + serverId);
+            throw new DeviceNotFoundException("Server not found: " + serverId);
         }
 
         RemoteService contentDir = device.findService(new UDAServiceType("ContentDirectory"));
@@ -577,6 +950,8 @@ public class ContentBrowseService {
         executeSync(invocation);
 
         String resultXml = getOutputString(invocation, "Result");
+        // No effective-date enrichment here: metadata fetches have no ordering, and the
+        // enrichment (date-ordering workaround) must not add UPnP traffic to them.
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
 
         for (BrowsableItem item : items) {
@@ -594,7 +969,8 @@ public class ContentBrowseService {
 
         ActionException failure = invocation.getFailure();
         if (failure != null) {
-            throw new RuntimeException("DLNA Browse action failed: " + failure.getMessage(), failure);
+            int errorCode = failure.getErrorCode() > 0 ? failure.getErrorCode() : -1;
+            throw new DlnaException("ContentDirectory action failed: " + failure.getMessage(), errorCode);
         }
     }
 
@@ -609,6 +985,17 @@ public class ContentBrowseService {
         Object value = output.getValue();
         if (value == null) return null;
         return value.toString();
+    }
+
+    /** TotalMatches from a misbehaving server may be absent or non-numeric; treat it as 0. */
+    private static int parseTotalMatches(String value) {
+        if (value == null || value.isBlank()) return 0;
+        try {
+            return Math.max(0, Integer.parseInt(value.trim()));
+        } catch (NumberFormatException e) {
+            log.warn("Server returned a non-numeric TotalMatches: {}", value);
+            return 0;
+        }
     }
 
     private String preprocessMalformedXml(String xml) {
@@ -627,13 +1014,13 @@ public class ContentBrowseService {
 
         try {
             xml = preprocessMalformedXml(xml);
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(true);
-            DocumentBuilder builder = factory.newDocumentBuilder();
+            DocumentBuilder builder = secureDocumentBuilderFactory(true).newDocumentBuilder();
             Document doc = builder.parse(new java.io.ByteArrayInputStream(xml.getBytes("UTF-8")));
             doc.getDocumentElement().normalize();
 
-            XPath xpath = XPathFactory.newInstance().newXPath();
+            XPathFactory xpathFactory = XPathFactory.newInstance();
+            xpathFactory.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            XPath xpath = xpathFactory.newXPath();
             NodeList nodeList = (NodeList) xpath.evaluate(
                     "//*[local-name()='item' or local-name()='container']",
                     doc.getDocumentElement(),
@@ -706,16 +1093,14 @@ public class ContentBrowseService {
             }
         }
 
-        if ((artist == null || artist.isEmpty()) && (description == null || description.isEmpty())) {
+        // upnp:artist is the fallback when the server omits dc:creator.
+        if (artist == null || artist.isEmpty()) {
             artist = findNsText(itemEl, "artist");
-        }
-        if (album == null || album.isEmpty()) {
-            album = findNsText(itemEl, "album");
         }
 
         return new BrowsableItem(id, parentId, title, artist, album, duration,
                 resolution, mimeType, size, protocolInfo, isContainer,
-                thumbnailUrl, classType, description, date, resourceName);
+                thumbnailUrl, classType, description, date, null, resourceName);
     }
 
     private String findNsText(Element parent, String localName) {
@@ -742,12 +1127,36 @@ public class ContentBrowseService {
         return false;
     }
 
-    private String extractMimeType(String protocolInfo) {
+    /**
+     * Extracts the content format (MIME type) from a DLNA protocolInfo string, which has the
+     * shape {@code <protocol>:<network>:<contentFormat>:<additionalInfo>} — e.g.
+     * {@code http-get:*:video/x-matroska:DLNA.ORG_PN=AVC_MKV}. The third field is the MIME type;
+     * the second is the network field and is almost always "*".
+     */
+    static String extractMimeType(String protocolInfo) {
         if (protocolInfo == null) return null;
         String[] parts = protocolInfo.split(":");
-        if (parts.length >= 2) {
-            return parts[1];
+        if (parts.length >= 3) {
+            String contentFormat = parts[2].trim();
+            return contentFormat.isEmpty() || "*".equals(contentFormat) ? null : contentFormat;
         }
         return null;
+    }
+
+    /**
+     * A DocumentBuilderFactory with DTDs and external entities disabled. DIDL-Lite and SOAP
+     * responses come from arbitrary devices on the local network, so they are untrusted input.
+     * Mirrors the hardening already applied in DidlUtils.extractTitleFromMetadata.
+     */
+    private static DocumentBuilderFactory secureDocumentBuilderFactory(boolean namespaceAware)
+            throws javax.xml.parsers.ParserConfigurationException {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(namespaceAware);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        return factory;
     }
 }

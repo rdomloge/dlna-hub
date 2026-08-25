@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { browse as browseApi, search as searchApi, type SortOption } from '@/api/browse';
+import { getThumbnail } from '@/api/browse';
 import { useAppStore } from '@/store/useAppStore';
 import type { BrowsableItem } from '@/types/media';
+import { mediaDateLabel } from '@/utils/formatDate';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -60,6 +62,7 @@ export default function BrowsePage() {
   const isFetchingRef = useRef(false);
   const latestRequestRef = useRef(0);
   const searchQueryRef = useRef('');
+  const lastLoadedServerRef = useRef<string | null>(null);
 
   const objectId = browseState.objectId;
   const breadcrumb = browseState.breadcrumb;
@@ -91,8 +94,10 @@ export default function BrowsePage() {
         }
         if (requestId !== latestRequestRef.current) return;
         isSearchingRef.current = searching;
+        const received = index + result.items.length;
         setItems((prev) => (index === 0 ? result.items : [...prev, ...result.items]));
-        setHasMore(index + result.count < result.total);
+        setHasMore(result.items.length > 0 && received < result.total);
+        setError(null);
       } catch (err: any) {
         if (requestId !== latestRequestRef.current) return;
         setError(err.message || 'Failed to load content');
@@ -125,12 +130,19 @@ export default function BrowsePage() {
   );
 
   useEffect(() => {
-    if (selectedServer) {
-      doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
-    } else {
+    if (!selectedServer) {
+      lastLoadedServerRef.current = null;
       navigate('/servers');
+      return;
     }
-  }, [selectedServer, doBrowse, navigate]);
+    if (lastLoadedServerRef.current === selectedServer.id) return;
+    lastLoadedServerRef.current = selectedServer.id;
+    doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
+    // doBrowse / browseState are intentionally not dependencies: this effect is the
+    // initial load for a newly selected server. Every later navigation, sort change and
+    // search goes through its own explicit doBrowse / fetchItems call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedServer, navigate]);
 
   useEffect(() => {
     if (loading || loadingMore) return;
@@ -399,6 +411,7 @@ export default function BrowsePage() {
             <ul className="space-y-2">
               {items.map((item) => {
                 const type = mediaType(item.mimeType);
+                const dateLabel = item.isContainer ? mediaDateLabel(item) : null;
                 return (
                   <li key={item.id}>
                     <button
@@ -420,6 +433,18 @@ export default function BrowsePage() {
                             d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
                           />
                         </svg>
+                      ) : item.thumbnailUrl && selectedServer ? (
+                        <img
+                          src={getThumbnail(selectedServer.id, item.id)}
+                          alt=""
+                          loading="lazy"
+                          className="h-10 w-10 rounded object-cover shrink-0 bg-gray-200"
+                          onError={(e) => {
+                            // The proxy 404s when the URL has fallen out of the backend cache.
+                            // Hide the broken image rather than showing a browser placeholder.
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
                       ) : (
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
@@ -440,7 +465,7 @@ export default function BrowsePage() {
                         <p className="font-medium text-gray-900 truncate">
                           {item.title}
                         </p>
-                        {!item.isContainer && (
+                        {!item.isContainer ? (
                           <div className="flex items-center gap-2 mt-0.5">
                             <span className="text-xs px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded">
                               {typeLabel(type)}
@@ -451,6 +476,14 @@ export default function BrowsePage() {
                               </span>
                             )}
                           </div>
+                        ) : (
+                          dateLabel && (
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-xs text-gray-400">
+                                Latest: {dateLabel}
+                              </span>
+                            </div>
+                          )
                         )}
                       </div>
                     </button>

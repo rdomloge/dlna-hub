@@ -19,7 +19,9 @@ import org.springframework.web.client.RestTemplate;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,6 +32,30 @@ public class TmdbService {
     private static final String BASE_URL = "https://api.themoviedb.org/3";
     private static final int MAX_CANDIDATES = 3;
     private static final int SEARCH_RESULT_LIMIT = 5;
+
+    /**
+     * Result cache keyed on the search arguments. A single searchByTitle can cost up to six
+     * sequential TMDB round-trips, and the frontend re-queries whenever the parsed title
+     * changes. Bounded and time-limited: TMDB metadata is stable, but this is a process-local
+     * convenience cache, not a datastore.
+     */
+    private static final long TMDB_CACHE_TTL_MS = 6 * 60 * 60 * 1000L;   // 6 hours
+    private static final int TMDB_CACHE_MAX_ENTRIES = 256;
+
+    private record CachedSearch(List<TmdbMediaDto> results, long cachedAt) {
+    }
+
+    private final Map<String, CachedSearch> searchCache = Collections.synchronizedMap(
+            new LinkedHashMap<String, CachedSearch>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CachedSearch> eldest) {
+                    return size() > TMDB_CACHE_MAX_ENTRIES;
+                }
+            });
+
+    private static String searchCacheKey(String title, Integer yearHint, Boolean tvHint) {
+        return title.trim().toLowerCase() + "|" + yearHint + "|" + tvHint;
+    }
 
     private final TmdbConfig tmdbConfig;
     private final RestTemplate restTemplate;
@@ -52,12 +78,26 @@ public class TmdbService {
     }
 
     public List<TmdbMediaDto> searchByTitle(String title, Integer yearHint, Boolean tvHint) {
-        if (!tmdbConfig.isEnabled()) {
-            log.debug("TMDB integration not configured");
+        if (!tmdbConfig.isEnabled() || title == null || title.isBlank()) {
             return List.of();
         }
 
-        log.info("Searching TMDB for title='{}', yearHint={}, tvHint={}", title, yearHint, tvHint);
+        String key = searchCacheKey(title, yearHint, tvHint);
+        CachedSearch cached = searchCache.get(key);
+        if (cached != null && System.currentTimeMillis() - cached.cachedAt() < TMDB_CACHE_TTL_MS) {
+            log.debug("TMDB cache hit for '{}'", title);
+            return cached.results();
+        }
+
+        List<TmdbMediaDto> results = searchByTitleUncached(title, yearHint, tvHint);
+        // Cache misses too: a title TMDB does not know will not start being known, and an
+        // empty result is exactly the case the frontend retries most often.
+        searchCache.put(key, new CachedSearch(results, System.currentTimeMillis()));
+        return results;
+    }
+
+    private List<TmdbMediaDto> searchByTitleUncached(String title, Integer yearHint, Boolean tvHint) {
+        log.debug("Searching TMDB for title='{}', yearHint={}, tvHint={}", title, yearHint, tvHint);
 
         List<SearchCandidate> candidates = new ArrayList<>();
         List<SearchCandidate> movieResults = List.of();
@@ -98,20 +138,13 @@ public class TmdbService {
         int limit = Math.min(MAX_CANDIDATES, candidates.size());
         List<SearchCandidate> top = candidates.subList(0, limit);
 
-        List<TmdbMediaDto> results = new ArrayList<>();
-        for (SearchCandidate c : top) {
-            TmdbMediaDto detail;
-            if ("movie".equals(c.type)) {
-                detail = getMovieDetails(c.id);
-            } else {
-                detail = getTvDetails(c.id);
-            }
-            if (detail != null) {
-                results.add(detail);
-            }
-        }
-
-        return results;
+        // Up to three independent detail fetches; run them concurrently rather than adding
+        // three round-trips of latency to the playback page. Order is preserved so the
+        // scoring done above still decides which candidate the UI shows first.
+        return top.parallelStream()
+                .map(c -> "movie".equals(c.type) ? getMovieDetails(c.id) : getTvDetails(c.id))
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toList());
     }
 
     private static <T> void addInterleaved(List<T> target, List<T> first, List<T> second) {

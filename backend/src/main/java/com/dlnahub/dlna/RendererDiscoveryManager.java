@@ -14,7 +14,6 @@ import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -67,7 +66,10 @@ public class RendererDiscoveryManager {
                 URL descriptorURL = device.getIdentity().getDescriptorURL();
                 if (descriptorURL != null) {
                     ip = descriptorURL.getHost();
-                    port = descriptorURL.getPort();
+                    // getPort() is -1 for a default-port URL; fall back to the scheme default.
+                    port = descriptorURL.getPort() != -1
+                            ? descriptorURL.getPort()
+                            : descriptorURL.getDefaultPort();
                 }
             } catch (Exception e) {
                 log.warn("Could not get IP/port for device: {}", friendlyName, e);
@@ -121,62 +123,52 @@ public class RendererDiscoveryManager {
         return device.getType() != null && device.getType().implementsVersion(MEDIA_RENDERER_DEVICE_TYPE);
     }
 
+    /**
+     * Protocols the renderer advertises via ConnectionManager's ProtocolInfo state variable.
+     * Returns an empty list when the device reports none — deliberately not a guessed default:
+     * this list is published to clients, and inventing capabilities the device may not have is
+     * worse than admitting they are unknown.
+     */
     private List<String> extractProtocols(RemoteDevice device) {
         List<String> protocols = new ArrayList<>();
 
-        for (RemoteService service : device.findServices(
-                new UDAServiceType("ConnectionManager"))) {
-
+        for (RemoteService service : device.findServices(new UDAServiceType("ConnectionManager"))) {
             StateVariable<RemoteService> protocolInfoVar = service.getStateVariable("ProtocolInfo");
-            if (protocolInfoVar != null && protocolInfoVar.getTypeDetails() != null) {
-                String defaultValue = protocolInfoVar.getTypeDetails().getDefaultValue();
-                if (defaultValue != null && !defaultValue.isEmpty()) {
-                    String[] protocolEntries = defaultValue.split(";");
-                    for (String entry : protocolEntries) {
-                        String trimmed = entry.trim();
-                        if (!trimmed.isEmpty()) {
-                            protocols.add(trimmed);
-                        }
-                    }
-                }
+            if (protocolInfoVar == null || protocolInfoVar.getTypeDetails() == null) {
+                continue;
             }
-
-            for (Action<RemoteService> action : service.getActions()) {
-                if ("GetProtocolInfo".equals(action.getName())) {
-                    break;
+            String defaultValue = protocolInfoVar.getTypeDetails().getDefaultValue();
+            if (defaultValue == null || defaultValue.isEmpty()) {
+                continue;
+            }
+            for (String entry : defaultValue.split(";")) {
+                String trimmed = entry.trim();
+                if (!trimmed.isEmpty()) {
+                    protocols.add(trimmed);
                 }
             }
         }
 
         if (protocols.isEmpty()) {
-            protocols = Arrays.asList(
-                "http-get:*:video/mpeg:DLNA.ORG_PN=MPEG_PS PAL",
-                "http-get:*:audio/mpeg:DLNA.ORG_PN=MP3"
-            );
+            log.debug("Renderer {} reports no ProtocolInfo", device.getDisplayString());
         }
-
         return protocols;
     }
 
+    /**
+     * The AVTransport action names the renderer actually declares in its SCPD. Empty when the
+     * device declares none — see extractProtocols for why this is not defaulted.
+     */
     private Set<String> extractTransportCapabilities(RemoteDevice device) {
         Set<String> capabilities = new HashSet<>();
-
-        for (RemoteService service : device.findServices(
-                new UDAServiceType("AVTransport"))) {
-
+        for (RemoteService service : device.findServices(new UDAServiceType("AVTransport"))) {
             for (Action<RemoteService> action : service.getActions()) {
                 capabilities.add(action.getName());
             }
-
         }
-
         if (capabilities.isEmpty()) {
-            capabilities.addAll(Arrays.asList(
-                "Play", "Pause", "Stop", "Seek", "Next", "Previous",
-                "SetAVTransportURI", "GetTransportInfo", "GetDeviceCapabilities"
-            ));
+            log.debug("Renderer {} declares no AVTransport actions", device.getDisplayString());
         }
-
         return capabilities;
     }
 

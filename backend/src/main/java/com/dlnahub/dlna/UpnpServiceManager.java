@@ -176,6 +176,11 @@ public class UpnpServiceManager {
         }
         configuredDeviceScans.put(udn, now + 60000);
 
+        log.info("Scanning ports {}-{} on {} for configured UPnP device {} (no descriptor at the "
+                        + "configured URL). Set port-range-start/-end to narrow this.",
+                firstPort, lastPort, URI.create(staticDevice.getDescriptorUrl()).getHost(),
+                udn.getIdentifierString());
+
         int portCount = lastPort - firstPort + 1;
         ExecutorService executor = Executors.newFixedThreadPool(Math.min(32, portCount));
         CompletionService<String> results = new ExecutorCompletionService<>(executor);
@@ -257,6 +262,7 @@ public class UpnpServiceManager {
     private void configureNetworkSelection() {
         String networkInterface = config.getNetworkInterface();
         if (networkInterface == null || networkInterface.isBlank()) {
+            log.info("No dlna.network-interface configured; letting jUPnP select interfaces automatically");
             return;
         }
         if (networkInterface.matches("[0-9.,\\s]+")) {
