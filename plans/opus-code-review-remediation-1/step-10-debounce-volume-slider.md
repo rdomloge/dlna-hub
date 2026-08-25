@@ -1,5 +1,23 @@
 # Step 10 — Debounce the volume slider
 
+> ℹ️ **Follow-up applied 2026-08-25: the debounce needed a guard.**
+>
+> The step is correct and stays. But it deliberately opens a ~200 ms window (plus the write's
+> round trip) between the user moving the slider and the renderer knowing about it — and the
+> status poll runs every second while playing. A poll landing in that window reports the *old*
+> volume, and `pollStatus` wrote it straight into the store, snapping the slider backwards
+> under the user's finger.
+>
+> The scrubber already had the equivalent protection (`isScrubbingRef`); the volume slider had
+> none. Fixed by `frontend/src/utils/reconcileVolume.ts`: readings are ignored until the
+> renderer confirms the value we sent, then trusted again. Verified live against the mpv
+> renderer — it echoes back 35 / 70 / 0 / 100 exactly, so the pending value always resolves and
+> the slider cannot freeze. 6 unit tests, proven by mutation.
+>
+> **Lesson for future steps:** deferring a write widens the window in which polled state can
+> contradict local state. Any debounce added next to a poller needs the poller taught to
+> respect it.
+
 **Phase:** 1 — Correctness
 **Severity:** Medium (report: M4)
 **Files:** `frontend/src/pages/PlaybackPage.tsx`

@@ -36,6 +36,15 @@ without it"; in the latter case, verify by other means (unit tests, source
 inspection, NAS-only live checks) and report the renderer-specific live
 check as skipped.
 
+## House Java unit testing style
+- Test classes should be named after the class they are testing, with a 'Test' suffix. (`EventDispatcherTest` tests `EventDispatcher`)
+- Test methods should be named [method under test]_[scenario]_[expected outcome] (`validateUser_nullEmail_throwsInvalidDataException`)
+- Test method bodies should be split into 3 clearly demarcated blocks, with comments to show this
+  - `given` - this is the block that setups up the necessary state for testing; mocks, data etc etc
+  - `when` - this is the block that makes the calls to simulate the system
+  - `then` - this is where we verify the end state for correctness
+  - Any of the above can be empty, where necessary - just leave a blank line.
+
 ## Test NAS facts (Synology DS918+) — established, do not re-verify
 
 - **The NAS exposes no date data for folders.** This is why date ordering uses the

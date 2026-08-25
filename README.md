@@ -168,7 +168,7 @@ kubectl rollout restart deployment/dlna-hub -n dlna-hub
 - The default filter requests: `dc:title,upnp:class,dc:date,dc:creator,res,res@duration,res@resolution,res@size,dc:description,upnp:artist,upnp:album,upnp:genre,dlna:profileID,refID,protocolInfo`.
 - Items are parsed from the DIDL-Lite XML response. A `BrowsableItem` carries: id, parentId, title, artist, album, duration, resolution, mimeType, size, protocolInfo, isContainer, thumbnailUrl, classType, description, date, effectiveDate, and resourceName.
 - Containers are identified by `classType` starting with `object.container` (e.g. `object.container.folder`).
-- Thumbnails are cached per (serverId, itemId) in a `ConcurrentHashMap` as soon as they appear in browse results, so the thumbnail proxy endpoint can serve them without re-fetching from the DLNA server.
+- Thumbnail URLs are cached per (serverId, itemId) in a bounded access-order LRU (5 000 entries) as soon as they appear in browse results, so the thumbnail proxy endpoint can serve them without re-fetching from the DLNA server. Only URLs are cached, never image bytes.
 
 ### Client-Side Sorting
 
@@ -196,7 +196,9 @@ kubectl rollout restart deployment/dlna-hub -n dlna-hub
 ### Search
 
 - Searches are performed via the ContentDirectory `Search` action when available. Search criteria match `dc:title`, `dc:creator`, or `upnp:album` containing the query string.
-- If the `Search` action is unavailable or returns an error (e.g. Synology answers UPnP 501), the backend falls back to an **in-memory search**: it walks the container subtree breadth-first (paginated, 500 per page), bounded to 20 000 visited items and 10 folder levels, filters the results client-side by title/artist/album, then applies sorting. Results beyond those bounds are not searched, and a warning is logged.
+- If the `Search` action is unavailable or returns an error (e.g. Synology answers UPnP 501), the backend falls back to an **in-memory search**: it fetches the **direct children** of the container the user is currently viewing (paginated, 500 per page, 50 000 cap), filters them client-side by title/artist/album, then applies sorting.
+- The fallback is deliberately **not recursive** — it narrows what is on screen. A subtree walk was tried and reverted: the browse list has room for a title and nothing else, so hits from several folders down read as items the current folder does not contain, and tapping one appended it to the current breadcrumb, inventing a parent/child relationship that does not exist. Searching from the library root also re-crawled the whole NAS for every distinct query.
+- Note the two paths therefore differ in scope: the ContentDirectory `Search` action is subtree-scoped by the UPnP spec and cannot be asked for direct children only, so a server that answers `Search` searches recursively. The test Synology answers UPnP 501, so the folder-scoped fallback is the path in use here.
 - Both paths support date enrichment and client-side sorting identically to browsing.
 
 ### Playback Control
@@ -270,7 +272,7 @@ The frontend's `cleanMediaTitle` utility extracts structured metadata from raw f
 | GET | `/servers/{id}/browse` | Browse content (params: `objectId`, `index`, `count`, `filter`, `sortBy`) |
 | GET | `/servers/{id}/search` | Search content (params: `containerId`, `query`, `index`, `count`, `filter`, `sortBy`) |
 | GET | `/servers/{id}/browse/{itemId}/metadata` | Get item metadata |
-| GET | `/servers/{id}/thumbnail/{itemId}` | Thumbnail proxy (image/jpeg) |
+| GET | `/servers/{id}/thumbnail/{itemId}` | Thumbnail proxy (content type detected from the image bytes) |
 
 #### Players (`PlayerController`, `PlaybackController`)
 

@@ -1,5 +1,25 @@
 # Step 09 — Fix "play" after the router state has been consumed
 
+> ⚠️ **This step caused a regression. Read before relying on it.**
+>
+> Applied as `a267603`, then corrected on 2026-08-25. Changing `navItem` to `item` made a
+> branch live that had been **unreachable dead code** — and that branch is wrong when the
+> user has merely paused: it re-sends the URI and restarts playback from 00:00:00.
+>
+> The premise below ("pressing Play from a STOPPED state sends a bare `Play` ... and nothing
+> happens") is **wrong for the Xbox**. That renderer keeps the URI loaded, so the bare `Play`
+> production had been sending all along resumes correctly. The genuine case this step targets
+> is narrower: a restored session where the renderer really has no URI.
+>
+> The change was **kept**, but is now gated on `userPaused` via
+> `frontend/src/utils/resolvePlayAction.ts`, so it only fires when there is no paused stream
+> to resume. Full analysis:
+> [`bugs/pause-then-unpause-restarts-from-beginning/REPORT.md`](../../bugs/pause-then-unpause-restarts-from-beginning/REPORT.md).
+>
+> **Lesson for future steps:** making dead code live is a behaviour change, not a repair.
+> Before "fixing" an unreachable branch, establish what the reachable path actually does --
+> here it was already doing the right thing.
+
 **Phase:** 1 — Correctness
 **Severity:** Medium (report: M5)
 **Files:** `frontend/src/pages/PlaybackPage.tsx`

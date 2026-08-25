@@ -34,16 +34,12 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.DateTimeException;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
@@ -77,9 +73,6 @@ public class ContentBrowseService {
     private static final int CACHE_MAX_ENTRIES = 10_000;        // per-server cap; beyond it the cache is cleared
     private static final long NO_UPDATE_ID_TTL_MS = 10 * 60 * 1000L; // freshness fallback when no SystemUpdateID
 
-    /* In-memory search: the whole subtree has to be walked, so it needs its own budget. */
-    private static final int SEARCH_MAX_ITEMS = 20_000;   // items visited per search
-    private static final int SEARCH_MAX_DEPTH = 10;       // folder depth walked
 
     /**
      * Grace period for SystemUpdateID churn. Measured on the test Synology NAS: the global
@@ -366,6 +359,21 @@ public class ContentBrowseService {
         return new BrowseResult(parseBrowseResult(resultXml, serverId), totalMatches, index, count, updateIdValue);
     }
 
+    /**
+     * Filters the direct children of the container the user is currently looking at.
+     *
+     * Deliberately NOT recursive. A subtree walk was tried and reverted: the browse list shows
+     * only a title per row, with no room for a path, so hits from three folders down read as
+     * items the current folder does not contain — and tapping one appended it to the current
+     * breadcrumb, inventing a parent/child relationship that does not exist. Searching from the
+     * library root also crawled the whole NAS on every distinct query. Search here narrows what
+     * is on screen; that is the behaviour the UI can actually present.
+     *
+     * Note this differs from the ContentDirectory Search action (searchViaAction), which is
+     * subtree-scoped by the UPnP spec and cannot be asked for direct children only. Servers that
+     * answer Search therefore still search recursively. The test Synology answers UPnP 501, so
+     * this path is the one in use here.
+     */
     private BrowseResult searchInMemory(String serverId, String containerId, String query, int index, int count,
                                          String filter, String sortBy) {
         String cacheKey = sortedCacheKey(serverId, "search:" + query.toLowerCase(), containerId, sortBy);
@@ -373,7 +381,7 @@ public class ContentBrowseService {
         if (cached != null) {
             return pagedResult(serverId, cached, index, count);
         }
-        List<BrowsableItem> allItems = collectSubtree(serverId, containerId, filter);
+        List<BrowsableItem> allItems = fetchAllChildren(serverId, containerId, filter, sortBy);
 
         String q = query.toLowerCase();
         List<BrowsableItem> matching = allItems.stream()
@@ -394,52 +402,6 @@ public class ContentBrowseService {
 
         cacheSortedSet(cacheKey, matching);
         return pagedResult(serverId, matching, index, count);
-    }
-
-    /**
-     * Walks a container subtree breadth-first, collecting every descendant. Bounded by
-     * SEARCH_MAX_ITEMS and SEARCH_MAX_DEPTH: this runs on an interactive request, and some
-     * servers expose libraries far larger than it is reasonable to walk per keystroke.
-     * Returns whatever was collected when a bound is hit — a partial search beats none.
-     */
-    private List<BrowsableItem> collectSubtree(String serverId, String containerId, String filter) {
-        List<BrowsableItem> collected = new ArrayList<>();
-        Deque<String> frontier = new ArrayDeque<>();
-        Map<String, Integer> depthOf = new HashMap<>();
-        Set<String> visited = new HashSet<>();
-        frontier.add(containerId);
-        depthOf.put(containerId, 0);
-
-        while (!frontier.isEmpty() && collected.size() < SEARCH_MAX_ITEMS) {
-            String current = frontier.poll();
-            if (!visited.add(current)) {
-                continue;   // some servers expose the same container under several parents
-            }
-            int depth = depthOf.getOrDefault(current, 0);
-
-            int start = 0;
-            while (collected.size() < SEARCH_MAX_ITEMS) {
-                BrowseResult page = browseInternal(serverId, current, start, CRAWL_PAGE_SIZE, filter, "");
-                List<BrowsableItem> children = page.getItems();
-                for (BrowsableItem child : children) {
-                    collected.add(child);
-                    if (child.isContainer() && depth < SEARCH_MAX_DEPTH) {
-                        frontier.add(child.getId());
-                        depthOf.put(child.getId(), depth + 1);
-                    }
-                }
-                if (children.size() < CRAWL_PAGE_SIZE) {
-                    break;
-                }
-                start += children.size();
-            }
-        }
-
-        if (collected.size() >= SEARCH_MAX_ITEMS) {
-            log.warn("In-memory search hit the {}-item budget for server={}, container={}; results are partial",
-                    SEARCH_MAX_ITEMS, serverId, containerId);
-        }
-        return collected;
     }
 
     private String buildSearchCriteria(String query) {

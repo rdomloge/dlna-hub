@@ -17,6 +17,8 @@ import { usePlaybackStore } from '@/store/usePlaybackStore';
 import { useVisibility } from '@/hooks/useVisibility';
 import { formatTime, parseTime } from '@/utils/formatTime';
 import { cleanMediaTitle, formatSubtitle } from '@/utils/cleanMediaTitle';
+import { resolvePlayAction } from '@/utils/resolvePlayAction';
+import { reconcileVolume } from '@/utils/reconcileVolume';
 import type { BrowsableItem } from '@/types/media';
 import TmdbMediaPanel from '@/components/TmdbMediaPanel';
 
@@ -33,6 +35,8 @@ export default function PlaybackPage() {
   const setPlayingPending = usePlaybackStore((s) => s.setPlayingPending);
   const playingPendingSince = usePlaybackStore((s) => s.playingPendingSince);
   const setPlayingPendingSince = usePlaybackStore((s) => s.setPlayingPendingSince);
+  const userPaused = usePlaybackStore((s) => s.userPaused);
+  const setUserPaused = usePlaybackStore((s) => s.setUserPaused);
   const currentTime = usePlaybackStore((s) => s.currentTime);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const duration = usePlaybackStore((s) => s.duration);
@@ -59,6 +63,8 @@ export default function PlaybackPage() {
   const isStartingRef = useRef(false);
   const isScrubbingRef = useRef(false);
   const volumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Volume we last sent, until the renderer confirms it. See reconcileVolume. */
+  const pendingVolumeRef = useRef<number | null>(null);
 
   const navigationState = location.state as {
     item?: BrowsableItem;
@@ -134,6 +140,9 @@ export default function PlaybackPage() {
     setTrackArtist(navItem.artist || '');
     setTrackAlbum(navItem.album || '');
     setActiveItem(navItem);
+    // A different item is loaded now, so any pause the user left on the previous one is
+    // no longer something to resume.
+    setUserPaused(false);
     const parsed = cleanMediaTitle(navItem.title || '');
     setParsedSubtitle(formatSubtitle(parsed.year, parsed.season, parsed.episode));
     setTmdbSearch({
@@ -195,16 +204,26 @@ export default function PlaybackPage() {
       } else {
         setPlayerError(null);
       }
-      if (typeof status.volume === 'number') {
-        setVolumeState(status.volume);
+      // The scrubber has isScrubbingRef; this is the same guard for the volume slider,
+      // which sends on a debounce and so can be overtaken by a poll. See reconcileVolume.
+      const volume = reconcileVolume(status.volume, pendingVolumeRef.current);
+      pendingVolumeRef.current = volume.pending;
+      if (volume.accept !== null) {
+        setVolumeState(volume.accept);
       }
 
       if (!isScrubbingRef.current) {
         const pos = parseTime(status.trackPosition || '00:00:00');
-        setCurrentTime(pos);
-
         const dur = parseTime(status.trackDuration || '00:00:00');
-        setDuration(dur);
+        // While the user has it paused the position cannot advance on its own. A renderer
+        // that has quietly dropped the paused stream answers 00:00:00 for both, which would
+        // snap the scrubber back to the start — ignore that and keep the pause point.
+        if (!userPaused || pos > 0) {
+          setCurrentTime(pos);
+        }
+        if (!userPaused || dur > 0) {
+          setDuration(dur);
+        }
       }
 
       if (status.trackTitle) setTrackTitle(status.trackTitle);
@@ -221,7 +240,7 @@ export default function PlaybackPage() {
     } finally {
       pollInFlightRef.current = false;
     }
-  }, [selectedPlayer, setPlaybackStatus, setIsPlaying, setVolumeState, setCurrentTime, setDuration, setPlayingPending, playingPending, playingPendingSince, navigate, setReconnecting]);
+  }, [selectedPlayer, setPlaybackStatus, setIsPlaying, setVolumeState, setCurrentTime, setDuration, setPlayingPending, playingPending, playingPendingSince, navigate, setReconnecting, userPaused]);
 
   const pollStatusRef = useRef(pollStatus);
   useEffect(() => {
@@ -257,6 +276,7 @@ export default function PlaybackPage() {
     if (!selectedPlayer || !isVisible) return;
     setReconnecting(true);
     consecutiveErrorsRef.current = 0;
+    pendingVolumeRef.current = null;
     pollStatusRef.current();
   }, [selectedPlayer, isVisible, setReconnecting]);
 
@@ -266,18 +286,28 @@ export default function PlaybackPage() {
       if (isPlaying) {
         await pause(selectedPlayer.id);
         setIsPlaying(false);
+        setUserPaused(true);
         if (playbackStatus) {
           setPlaybackStatus({ ...playbackStatus, state: 'PAUSED_PLAYBACK' });
         }
       } else {
         setPlayingPending(true);
         setPlayingPendingSince(Date.now());
-        if (playbackStatus?.state === 'PAUSED_PLAYBACK') {
-          // Resume: the renderer still holds the URI, a bare Play is correct.
+        // Decided in resolvePlayAction so the rule is unit-testable — it is where a
+        // regression once restarted paused playback from 00:00:00.
+        const action = resolvePlayAction({
+          reportedState: playbackStatus?.state,
+          userPaused,
+          hasResource: !!item?.resourceName,
+        });
+        if (action === 'resume') {
+          // The renderer still holds the URI; a bare Play picks up at the pause point.
           await play(selectedPlayer.id, '');
-        } else if (item?.resourceName) {
-          // Restart from stopped: re-send the URI. `item` is navItem ?? activeItem, so this
-          // still works after the one-time router state has been consumed.
+          setUserPaused(false);
+        } else if (action === 'restart' && item?.resourceName) {
+          // No paused stream to resume (genuine Stop, or a restored session): rebuild it
+          // from the start. `item` is navItem ?? activeItem, so this still works after the
+          // one-time router state has been consumed.
           await play(selectedPlayer.id, item.resourceName, {
             title: cleanMediaTitle(item.title || '').cleansedTitle,
             artist: item.artist,
@@ -302,6 +332,7 @@ export default function PlaybackPage() {
       await stopApi(selectedPlayer.id);
       setIsPlaying(false);
       setPlayingPending(false);
+      setUserPaused(false);
       if (playbackStatus) {
         setPlaybackStatus({ ...playbackStatus, state: 'STOPPED' });
       }
@@ -362,9 +393,14 @@ export default function PlaybackPage() {
     // Update the slider immediately so it stays responsive, but only send the last
     // value once the user stops dragging — each send is a UPnP round-trip.
     setVolumeState(vol);
+    // Ignore polled readings until the renderer reports this value back.
+    pendingVolumeRef.current = vol;
     if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current);
     volumeTimeoutRef.current = setTimeout(() => {
       setVolume(selectedPlayer.id, vol).catch(() => {
+        // The write failed, so the renderer will never confirm it — stop ignoring polls,
+        // otherwise the slider would be frozen on a value that was never applied.
+        pendingVolumeRef.current = null;
         setPlayerError('Failed to set volume');
       });
     }, VOLUME_DEBOUNCE_MS);

@@ -412,3 +412,101 @@ Two of the five findings in this report (F2, and the breadcrumb bug folded into 
 one step that was specified from the documentation rather than from the running interface.
 When a step changes what the user sees, "does the code now match the docs?" is the wrong
 acceptance test — the docs were one of the things under suspicion.
+
+---
+
+## 10. Post-review regression: step-09
+
+**Found:** 2026-08-25, from a user bug report. **Fixed same day.**
+
+§7 of this report listed steps 09–11 as *"verified by code inspection and unit tests only"*
+because the Xbox was off. That caveat cashed in almost immediately.
+
+### What happened
+
+Step-09 changed `navItem` to `item` (= `navItem ?? activeItem`) in `handlePlayPause`. What
+made this a behaviour change rather than a repair is that **the branch it modified had been
+unreachable**: `navItem` is nulled by the mount effect (`navigate(..., state: null)`), so by
+the time any button can be pressed it is always `undefined`. Every unpause in production fell
+through to the final `else` and sent a bare `Play` — which the Xbox resumes correctly,
+because it keeps the URI loaded.
+
+Making that branch live meant a pause-then-wait-then-unpause re-sent the URI and restarted
+playback from 00:00:00. The five-second threshold users saw is the paused-state poll cadence.
+
+### Fixed by
+
+A `userPaused` flag in the playback store, and the decision extracted into
+`frontend/src/utils/resolvePlayAction.ts` — a pure function with 9 table-driven tests, proven
+by mutation to fail if the guard is removed. Frontend tests: **27 → 36**. Full write-up in
+[`bugs/pause-then-unpause-restarts-from-beginning/REPORT.md`](../../bugs/pause-then-unpause-restarts-from-beginning/REPORT.md).
+
+### What this says about the review
+
+Three things worth carrying forward:
+
+1. **The "not live-tested" caveat was the right call and still insufficient.** Naming a risk
+   is not the same as covering it. Steps 10 and 11 remain in the same position.
+2. **The tell was available without hardware.** A step that makes dead code live is changing
+   behaviour that has never run. That is checkable by reading, and neither the original spec
+   nor this review's conformance pass asked the question. Worth adding to the review
+   checklist: *for any branch being modified, was it reachable before?*
+3. **§7's recommendation was the right one.** It named frontend tests as where the residual
+   risk sat, and this regression landed exactly there. The first frontend test beyond
+   `cleanMediaTitle` now exists because of it.
+
+This does not change the verdict on the other 29 steps — the live evidence in §3 stands.
+
+---
+
+## 11. Post-review follow-up: step-10's debounce needed a guard
+
+**Found:** 2026-08-25, by applying §10's lesson to the two steps still listed as unverified.
+**Fixed same day. No bug report — this was caught by reading, before anyone hit it.**
+
+### The gap
+
+Step-10 replaced a `PUT` per `onChange` with a 200 ms debounce. Correct, and it stays. But
+deferring the write widens the window in which the renderer still holds the *old* volume —
+and `pollStatus` runs every second while playing and wrote `status.volume` straight into the
+store with no guard:
+
+```
+line 205:  setVolumeState(status.volume);     ← volume: unguarded
+line 208:  if (!isScrubbingRef.current) {     ← scrubber: guarded
+```
+
+The scrubber had exactly this protection; the volume slider never got it. A poll landing
+mid-drag would snap the slider back under the user's finger.
+
+### Fixed by
+
+`frontend/src/utils/reconcileVolume.ts` — a pure function that ignores polled readings until
+the renderer confirms the value we last sent, then resumes trusting it. Chosen over a plain
+"busy" flag because a flag still loses to a poll *issued* before our write but *answered*
+after it.
+
+Also cleared on write failure (the renderer will never confirm a value it rejected, so the
+slider must not stay frozen) and on player change.
+
+### Verified
+
+- **6 unit tests**, including the 0/100 boundaries — `0` must not be mistaken for "nothing
+  pending" — and a full drag sequence. Proven by mutation: removing the guard fails 3 of 6.
+- **Live, against the mpv renderer:** sent 35 / 70 / 0 / 100 and `/status` echoed each back
+  exactly. That is the premise the reconciliation depends on — the pending value always
+  resolves, so the slider cannot freeze.
+
+Frontend tests: **36 → 42**, across three files.
+
+### Status of the remaining unverified steps
+
+| Step | Status |
+|------|--------|
+| 09 | Regression found and fixed (§10) |
+| 10 | Gap found and fixed (this section) |
+| 11 | **Still unverified.** Lower risk: no reachability change and no new timing window — it restructured effects. The open question is whether the reconnect overlay now appears too *rarely* (e.g. after a long tab backgrounding), which needs eyes on the UI rather than analysis. |
+
+Steps 09 and 10 were both caught without the Xbox. §10 argued the tell was readable from the
+diff; that held again here. The checklist question that found this one: **does this change
+defer a write that a poller will contradict?**
