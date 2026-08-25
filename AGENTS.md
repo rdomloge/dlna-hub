@@ -16,6 +16,20 @@ cd frontend && npm test             # Vitest
 cd backend && mvn verify            # Compile + tests + JaCoCo report
 ```
 
+### Maven (agents)
+
+`mvn test` (and `mvn clean test`, `mvn spring-boot:run`) works **out of the box**
+in the sandbox — no special settings, no workspace-local `.m2`, no escalation.
+Maven's resolver writes to `~/.m2/repository` are not blocked by the file
+sandbox, so agents can run Maven commands directly from `backend/` without
+any configuration:
+
+```powershell
+cd backend
+mvn clean test           # Runs fine — 58 tests, all pass
+mvn spring-boot:run      # Starts on port 9100
+```
+
 ## Stack
 - **Backend**: Java 21, Spring Boot 3.3.5, jupnp 3.0.2 (DLNA/UPnP)
 - **Frontend**: Vite 6, React 18, TypeScript, TailwindCSS 3, Zustand, Axios, React Router 6
