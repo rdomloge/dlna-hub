@@ -84,8 +84,7 @@ check as skipped.
 ## Completion notification (Discord)
 When work on this repo is finished (a task, fix, or deployment is complete),
 notify the owner via Discord with a short summary of what was done. The webhook URL is
-supplied via the `DISCORD_WEBHOOK_URL` environment variable and is never stored in this
-repository — set it in your shell profile. If it is unset, skip the notification.
+supplied the webhook_url.txt file, which is in .gitignore — set it in your shell profile. If it is unset, skip the notification.
 
 ```
 curl.exe -s -X POST "$DISCORD_WEBHOOK_URL" -H "Content-Type: application/json" -d "{\"content\":\"<short summary>\"}"

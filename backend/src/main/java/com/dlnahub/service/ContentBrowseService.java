@@ -81,12 +81,12 @@ public class ContentBrowseService {
     private static final long NO_UPDATE_ID_TTL_MS = 10 * 60 * 1000L; // freshness fallback when no SystemUpdateID
 
     /* Effective-date stream (SSE) limits. The blocking browse keeps ENRICH_MAX_ITEMS_PER_CALL as
-     * its latency budget; the background completion stream is deliberately far above it so that, in
+     * its latency budget; the background completion stream is deliberately uncapped so that, in
      * practice, every container in a folder finishes. The per-subtree hard caps (CRAWL_MAX_TOTAL_ITEMS,
-     * CRAWL_MAX_DEPTH) and the wall-clock deadline remain the safety rails. */
-    private static final int STREAM_ITEM_BUDGET = CRAWL_MAX_TOTAL_ITEMS * 20; // 1,000,000 items
-    private static final long STREAM_DEADLINE_MS = 8 * 60 * 1000L;           // wall-clock cap for one stream
-    private static final long STREAM_EMITTER_TIMEOUT_MS = 10 * 60 * 1000L;   // SseEmitter timeout (above the deadline)
+     * CRAWL_MAX_DEPTH) and the wall-clock deadline are the only safety rails. */
+    private static final int STREAM_ITEM_BUDGET = Integer.MAX_VALUE; // effectively unlimited — deadline is the real limit
+    private static final long STREAM_DEADLINE_MS = 15 * 60 * 1000L; // 15-minute wall-clock cap for one stream
+    private static final long STREAM_EMITTER_TIMEOUT_MS = 20 * 60 * 1000L;   // SseEmitter timeout (above the deadline)
     private static final String STREAM_CHILDREN_FILTER = "dc:title,upnp:class,dc:date";
 
     /**
@@ -728,6 +728,10 @@ public class ContentBrowseService {
      */
     void runDateStream(String serverId, String objectId, DateStreamSink sink) throws IOException {
         List<BrowsableItem> children = fetchAllChildren(serverId, objectId, STREAM_CHILDREN_FILTER, "");
+        long totalContainers = children.stream().filter(BrowsableItem::isContainer).count();
+        int crawled = 0;
+        log.info("Date stream started for server={} container={} ({} children, {} containers)",
+                serverId, objectId, children.size(), totalContainers);
         String updateId = getSystemUpdateId(serverId);
         Map<String, ContainerDateEntry> cache =
                 containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
@@ -747,7 +751,10 @@ public class ContentBrowseService {
             }
             String date = fresh.latestDate() != null ? fresh.latestDate().toString() : null;
             sink.send(DateEvent.dateEvent(item.getId(), date, true));
+            crawled++;
         }
+        log.info("Date stream finished for server={} container={}: crawled {} of {} containers, cache size={}",
+                serverId, objectId, crawled, totalContainers, cache.size());
         sink.send(DateEvent.terminalEvent());
     }
 
