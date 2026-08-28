@@ -223,19 +223,18 @@ public class ContentBrowseService {
         // GetSystemUpdateID call (and possibly subtree crawls), so it only runs when the
         // requested order is by date. Every other sort uses the server's order as-is.
         boolean dateSort = isDateSort(sortBy);
-        boolean enrich = dateSort && !skipEnrich;
         boolean clientSort = needsClientSort(sortBy) && !supportsServerSort(serverId);
         if (clientSort) {
             // Server does not sort on its side (e.g. Synology silently ignores SortCriteria) —
             // we fetch the whole container, sort in memory and page locally. The sorted set is
             // cached briefly so that scrolling does not re-fetch the container for every page.
-            String cacheKey = sortedCacheKey(serverId, "browse", objectId, sortBy + (enrich ? "|E" : "|N"));
+            String cacheKey = sortedCacheKey(serverId, "browse", objectId, sortBy + (!skipEnrich ? "|E" : "|N"));
             List<BrowsableItem> all = cachedSortedSet(cacheKey);
             if (all == null) {
                 String effectiveFilter = dateSort ? ensureFilterField(filter, "dc:date") : filter;
                 all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
-                if (enrich) {
-                    all = enrichContainerDates(serverId, all);
+                if (dateSort) {
+                    all = enrichContainerDates(serverId, all, !skipEnrich);
                 }
                 all = new ArrayList<>(all);
                 sortItems(all, sortBy);
@@ -275,8 +274,8 @@ public class ContentBrowseService {
         int totalMatches = parseTotalMatches(totalMatchesStr);
 
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
-        if (enrich) {
-            items = enrichContainerDates(serverId, items);
+        if (dateSort) {
+            items = enrichContainerDates(serverId, items, !skipEnrich);
         }
 
         for (BrowsableItem item : items) {
@@ -964,6 +963,18 @@ public class ContentBrowseService {
      * successive requests. Never fails the browse: on any error the unenriched list is returned.
      */
     List<BrowsableItem> enrichContainerDates(String serverId, List<BrowsableItem> items) {
+        return enrichContainerDates(serverId, items, true);
+    }
+
+    /**
+     * Enriches container items with their effective dates so date sorting and date display work
+     * for folders. When {@code crawl} is true, unknown or stale dates are filled in by crawling
+     * the container subtrees (the expensive path). When {@code crawl} is false, only dates already
+     * in the cache are applied, so the call is a cheap cache read (no UPnP traffic); this lets a
+     * date-sorted browse return instantly on a revisit while the SSE stream does the crawling.
+     * Never fails the browse: on any error the unenriched list is returned.
+     */
+    List<BrowsableItem> enrichContainerDates(String serverId, List<BrowsableItem> items, boolean crawl) {
         if (items == null || items.isEmpty()) {
             return items;
         }
@@ -975,13 +986,13 @@ public class ContentBrowseService {
             return items;
         }
 
-        String updateId = getSystemUpdateId(serverId);
+        String updateId = crawl ? getSystemUpdateId(serverId) : null;
         long now = System.currentTimeMillis();
 
         try {
             Map<String, ContainerDateEntry> cache =
                     containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
-            CrawlBudget budget = new CrawlBudget(ENRICH_MAX_ITEMS_PER_CALL);
+            CrawlBudget budget = crawl ? new CrawlBudget(ENRICH_MAX_ITEMS_PER_CALL) : null;
             int crawls = 0;
             List<BrowsableItem> out = new ArrayList<>(items.size());
             for (BrowsableItem item : items) {
@@ -990,7 +1001,7 @@ public class ContentBrowseService {
                     continue;
                 }
                 ContainerDateEntry entry = cache.get(item.getId());
-                if (!isFresh(entry, updateId, now) && crawls < ENRICH_MAX_CRAWLS_PER_CALL) {
+                if (crawl && !isFresh(entry, updateId, now) && crawls < ENRICH_MAX_CRAWLS_PER_CALL) {
                     crawls++;
                     entry = crawlAndCache(serverId, item.getId(), updateId, now, budget, cache, entry);
                 }

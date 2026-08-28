@@ -549,8 +549,21 @@ export default function BrowsePage() {
           </div>
         </div>
 
-        {loading && items.length === 0 ? (
-          <LoadingSpinner />
+        {/* Loading / dates indicators — shown when there's nothing else meaningful to display */}
+        {(loading || (datesPending && streamActive)) && items.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-8">
+            <LoadingSpinner />
+            {datesPending && streamActive && (
+              <p className="text-xs text-gray-500">
+                Computing latest dates…
+              </p>
+            )}
+          </div>
+        ) : loading && items.length > 0 ? (
+          <div className="flex items-center gap-2 py-4 px-4 rounded-lg bg-gray-50 border border-gray-100 mb-4">
+            <span className="h-3 w-3 rounded-full border-2 border-gray-300 border-t-gray-600 animate-spin shrink-0" />
+            <span className="text-sm text-gray-500">Loading…</span>
+          </div>
         ) : error && items.length === 0 ? (
           <div className="text-center py-8">
             <p className="text-red-600 mb-2">{error}</p>
@@ -567,16 +580,17 @@ export default function BrowsePage() {
           </div>
         ) : (
           <>
-            {isSearching && (
-              <p className="text-xs text-gray-500 mb-2">
-                Searching for "{searchQuery}"
-              </p>
-            )}
+            {/* Dates chip: moved outside the items block so it always shows while the stream runs */}
             {datesPending && streamActive && (
               <div className="flex items-center gap-2 mb-2 text-xs text-gray-500">
                 <span className="h-3 w-3 rounded-full border-2 border-gray-300 border-t-gray-600 animate-spin" />
                 <span>Computing latest dates…</span>
               </div>
+            )}
+            {isSearching && (
+              <p className="text-xs text-gray-500 mb-2">
+                Searching for "{searchQuery}"
+              </p>
             )}
             <ul className="space-y-2">
               {items.map((item) => {
