@@ -3,6 +3,7 @@ package com.dlnahub.service;
 import com.dlnahub.dlna.UpnpServiceManager;
 import com.dlnahub.dlna.model.BrowseResult;
 import com.dlnahub.dlna.model.BrowsableItem;
+import com.dlnahub.dlna.model.DateEvent;
 import com.dlnahub.exception.DeviceNotFoundException;
 import com.dlnahub.exception.DlnaException;
 import org.jupnp.controlpoint.ActionCallback;
@@ -19,7 +20,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import jakarta.annotation.PreDestroy;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.xpath.XPath;
@@ -38,9 +41,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 @Service
@@ -72,6 +79,31 @@ public class ContentBrowseService {
     private static final int ENRICH_MAX_CRAWLS_PER_CALL = 300;  // top-level subtrees crawled per enrich call
     private static final int CACHE_MAX_ENTRIES = 10_000;        // per-server cap; beyond it the cache is cleared
     private static final long NO_UPDATE_ID_TTL_MS = 10 * 60 * 1000L; // freshness fallback when no SystemUpdateID
+
+    /* Effective-date stream (SSE) limits. The blocking browse keeps ENRICH_MAX_ITEMS_PER_CALL as
+     * its latency budget; the background completion stream is deliberately far above it so that, in
+     * practice, every container in a folder finishes. The per-subtree hard caps (CRAWL_MAX_TOTAL_ITEMS,
+     * CRAWL_MAX_DEPTH) and the wall-clock deadline remain the safety rails. */
+    private static final int STREAM_ITEM_BUDGET = CRAWL_MAX_TOTAL_ITEMS * 20; // 1,000,000 items
+    private static final long STREAM_DEADLINE_MS = 8 * 60 * 1000L;           // wall-clock cap for one stream
+    private static final long STREAM_EMITTER_TIMEOUT_MS = 10 * 60 * 1000L;   // SseEmitter timeout (above the deadline)
+    private static final String STREAM_CHILDREN_FILTER = "dc:title,upnp:class,dc:date";
+
+    /**
+     * Small pool for background effective-date stream jobs. Two threads are plenty for a LAN
+     * hub: streams are per (server, folder) and the owner browses one folder at a time; the
+     * pool just keeps the stream work off the request thread.
+     */
+    private final ExecutorService dateStreamPool = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "date-stream");
+        t.setDaemon(true);
+        return t;
+    });
+
+    @PreDestroy
+    void shutdownDateStreamPool() {
+        dateStreamPool.shutdownNow();
+    }
 
 
     /**
@@ -596,6 +628,139 @@ public class ContentBrowseService {
             }
         }
         return new BrowseResult(page, total, index, count, "");
+    }
+
+    /**
+     * Sink abstraction for the effective-date stream: the production sink writes SSE events;
+     * tests collect events. Throwing {@link IOException} signals that the client went away and
+     * the stream must stop.
+     */
+    @FunctionalInterface
+    interface DateStreamSink {
+        void send(DateEvent event) throws IOException;
+    }
+
+    /**
+     * Opens an SSE stream that completes the container effective-date cache for one folder.
+     *
+     * <p>The blocking browse response (see {@link #browse}) returns quickly with a capped,
+     * best-effort set of container dates. This stream finishes crawling any containers whose
+     * dates are still unknown — off the request path, with a much larger budget and a
+     * wall-clock deadline — and pushes each newly-known date as an SSE event, ending with a
+     * terminal {@code allDone} event. The client splices each date in and re-sorts live.
+     *
+     * <p>For a non-date sort there is nothing to stream: the stream completes immediately with
+     * the terminal event.
+     */
+    public SseEmitter openDateStream(String serverId, String objectId, String sortBy) {
+        SseEmitter emitter = new SseEmitter(STREAM_EMITTER_TIMEOUT_MS);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        emitter.onCompletion(() -> cancelled.set(true));
+        emitter.onTimeout(() -> cancelled.set(true));
+        emitter.onError(t -> cancelled.set(true));
+        DateStreamSink sink = emitterSink(emitter, cancelled);
+
+        if (!isDateSort(sortBy)) {
+            // Nothing to stream for a non-date sort; emit the terminal event and complete.
+            try {
+                sink.send(DateEvent.terminalEvent());
+            } catch (IOException e) {
+                log.debug("Date stream for server={} container={} could not emit allDone: {}",
+                        serverId, objectId, e.getMessage());
+            }
+            emitter.complete();
+            return emitter;
+        }
+
+        dateStreamPool.execute(() -> runDateStreamJob(serverId, objectId, emitter, sink, cancelled));
+        return emitter;
+    }
+
+    /** Wraps an {@link SseEmitter} as a sink that refuses to send once the stream was cancelled. */
+    private DateStreamSink emitterSink(SseEmitter emitter, AtomicBoolean cancelled) {
+        return event -> {
+            if (cancelled.get()) {
+                throw new IOException("date stream closed");
+            }
+            emitter.send(SseEmitter.event().name("date").data(event));
+        };
+    }
+
+    private void runDateStreamJob(String serverId, String objectId,
+                                  SseEmitter emitter, DateStreamSink sink, AtomicBoolean cancelled) {
+        try {
+            // runDateStream ends by sending the terminal allDone event.
+            runDateStream(serverId, objectId, sink);
+            emitter.complete();
+        } catch (IOException e) {
+            // The client disconnected mid-stream (or the emitter was cancelled); stop quietly.
+            log.debug("Date stream for server={} container={} ended: {}", serverId, objectId, e.getMessage());
+        } catch (RuntimeException e) {
+            log.warn("Date stream for server={} container={} failed: {}", serverId, objectId, e.getMessage());
+            try {
+                sink.send(DateEvent.terminalEvent());
+            } catch (IOException ignored) {
+                // best effort: the client is probably already gone
+            }
+            emitter.completeWithError(e);
+        }
+    }
+
+    /**
+     * Runs the completion crawl for one folder: fetches the folder's direct children, then crawls
+     * any container whose effective date is not already fresh in the cache, emitting a
+     * {@link DateEvent} per newly-known date and a terminal event at the end.
+     *
+     * <p>Containers already fresh in the cache produce no event. The crawl runs under a
+     * deliberately large shared budget (see {@link #STREAM_ITEM_BUDGET}) and is bounded by the
+     * per-subtree caps and a wall-clock deadline.
+     */
+    void runDateStream(String serverId, String objectId, DateStreamSink sink) throws IOException {
+        List<BrowsableItem> children = fetchAllChildren(serverId, objectId, STREAM_CHILDREN_FILTER, "");
+        String updateId = getSystemUpdateId(serverId);
+        Map<String, ContainerDateEntry> cache =
+                containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
+        long deadline = System.currentTimeMillis() + STREAM_DEADLINE_MS;
+        CrawlBudget budget = new CrawlBudget(STREAM_ITEM_BUDGET);
+
+        for (BrowsableItem item : children) {
+            if (System.currentTimeMillis() > deadline) {
+                break;
+            }
+            if (!item.isContainer()) {
+                continue;
+            }
+            ContainerDateEntry fresh = crawlIfStale(serverId, item.getId(), updateId, budget, cache);
+            if (fresh == null) {
+                continue; // already known, or the crawl did not complete; retry on a later stream
+            }
+            String date = fresh.latestDate() != null ? fresh.latestDate().toString() : null;
+            sink.send(DateEvent.dateEvent(item.getId(), date, true));
+        }
+        sink.send(DateEvent.terminalEvent());
+    }
+
+    /**
+     * Crawls one container's subtree under its per-container lock with the given budget and,
+     * when the crawl completes, replaces the cache entry and returns it. Returns null when the
+     * entry is already fresh or the crawl did not complete (the caller must not emit an event
+     * and the next stream/request will retry).
+     */
+    private ContainerDateEntry crawlIfStale(String serverId, String containerId, String updateId,
+                                            CrawlBudget budget, Map<String, ContainerDateEntry> cache) {
+        synchronized (crawlLock(serverId, containerId)) {
+            ContainerDateEntry current = cache.get(containerId);
+            if (isFresh(current, updateId, System.currentTimeMillis())) {
+                return null;
+            }
+            CrawlResult result = crawlSubtree(serverId, containerId, updateId, 0, budget, cache);
+            if (!result.complete) {
+                return null;
+            }
+            ContainerDateEntry fresh = new ContainerDateEntry(updateId, result.date, System.currentTimeMillis());
+            cache.put(containerId, fresh);
+            return fresh;
+        }
     }
 
     /**

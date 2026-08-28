@@ -17,6 +17,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -63,6 +64,22 @@ public class BrowseController {
         log.debug("Search request: server={}, container={}, query={}, index={}, count={}",
                 serverId, containerId, query, index, count);
         return contentBrowseService.search(serverId, containerId, query, index, count, filter, sortBy);
+    }
+
+    /**
+     * Opens an SSE stream that completes the container effective-date cache for a folder.
+     *
+     * <p>After a date-sorted browse returns, the client opens this stream; the backend finishes
+     * crawling any folders whose effective dates are still unknown and pushes each newly-known
+     * date as a {@code date} event, ending with a terminal {@code allDone} event.
+     */
+    @GetMapping(value = "/{serverId}/browse/{objectId}/dates", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter browseDates(
+            @PathVariable String serverId,
+            @PathVariable String objectId,
+            @RequestParam(value = "sortBy", defaultValue = "") String sortBy) {
+        log.debug("Date stream request: server={}, objectId={}, sortBy={}", serverId, objectId, sortBy);
+        return contentBrowseService.openDateStream(serverId, objectId, sortBy);
     }
 
     @GetMapping("/{serverId}/browse/{itemId}/metadata")
