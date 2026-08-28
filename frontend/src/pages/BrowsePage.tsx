@@ -113,10 +113,14 @@ export default function BrowsePage() {
         let result;
         const trimmedQuery = query?.trim() ?? '';
         const searching = trimmedQuery.length > 0;
+        // In stream mode for a date sort, skip the expensive server-side effective-date
+        // enrichment so the first page returns immediately; the SSE date stream fills in dates
+        // in the background (see the stream effect below). Legacy mode keeps the enrichment.
+        const streamMode = dateSortMode === 'stream' && isDateSort(activeSort) && !searching;
         if (searching) {
           result = await searchApi(selectedServer.id, trimmedQuery, oid, index, PAGE_SIZE, activeSort);
         } else {
-          result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort);
+          result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort, streamMode);
         }
         if (requestId !== latestRequestRef.current) return;
         isSearchingRef.current = searching;
@@ -125,8 +129,7 @@ export default function BrowsePage() {
         // already computed (appliedDatesRef) so this page inherits dates for containers that
         // predate its load, then re-sort so the page sits correctly.
         const map = appliedDatesRef.current;
-        const streamMerge = !searching && dateSortMode === 'stream' && isDateSort(activeSort);
-        const pageItems = streamMerge
+        const pageItems = streamMode
           ? sortByEffectiveDate(
               result.items.map((it) =>
                 it.isContainer && map.has(it.id)
@@ -139,7 +142,7 @@ export default function BrowsePage() {
         setItems((prev) => {
           if (index === 0) return pageItems;
           const combined = [...prev, ...pageItems];
-          return streamMerge
+          return streamMode
             ? sortByEffectiveDate(combined, activeSort === '-dc:date')
             : combined;
         });

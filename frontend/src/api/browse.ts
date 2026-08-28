@@ -8,11 +8,12 @@ export function browse(
   objectId: string = '0',
   index: number = 0,
   count: number = 50,
-  sortBy: SortOption = ''
+  sortBy: SortOption = '',
+  skipEnrich: boolean = false
 ): Promise<BrowseResult> {
   return api
     .get(`/servers/${serverId}/browse`, {
-      params: { objectId, index, count, sortBy },
+      params: { objectId, index, count, sortBy, skipEnrich },
     })
     .then((res) => res.data);
 }

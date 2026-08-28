@@ -208,21 +208,33 @@ public class ContentBrowseService {
 
     public BrowseResult browse(String serverId, String objectId, int index, int count,
                                String filter, String sortBy) {
+        return browse(serverId, objectId, index, count, filter, sortBy, false);
+    }
+
+    /**
+     * Browses a container. When {@code skipEnrich} is set and the sort is by date, the expensive
+     * effective-date enrichment ({@link #enrichContainerDates}) is skipped so the first page
+     * returns immediately; the client then opens the SSE date stream to fill in dates in the
+     * background. With {@code skipEnrich} false (or a non-date sort) the behavior is unchanged.
+     */
+    public BrowseResult browse(String serverId, String objectId, int index, int count,
+                               String filter, String sortBy, boolean skipEnrich) {
         // Container effective-date enrichment is a date-ordering workaround: it costs an extra
         // GetSystemUpdateID call (and possibly subtree crawls), so it only runs when the
         // requested order is by date. Every other sort uses the server's order as-is.
         boolean dateSort = isDateSort(sortBy);
+        boolean enrich = dateSort && !skipEnrich;
         boolean clientSort = needsClientSort(sortBy) && !supportsServerSort(serverId);
         if (clientSort) {
             // Server does not sort on its side (e.g. Synology silently ignores SortCriteria) —
             // we fetch the whole container, sort in memory and page locally. The sorted set is
             // cached briefly so that scrolling does not re-fetch the container for every page.
-            String cacheKey = sortedCacheKey(serverId, "browse", objectId, sortBy);
+            String cacheKey = sortedCacheKey(serverId, "browse", objectId, sortBy + (enrich ? "|E" : "|N"));
             List<BrowsableItem> all = cachedSortedSet(cacheKey);
             if (all == null) {
                 String effectiveFilter = dateSort ? ensureFilterField(filter, "dc:date") : filter;
                 all = fetchAllChildren(serverId, objectId, effectiveFilter, sortBy);
-                if (dateSort) {
+                if (enrich) {
                     all = enrichContainerDates(serverId, all);
                 }
                 all = new ArrayList<>(all);
@@ -263,7 +275,7 @@ public class ContentBrowseService {
         int totalMatches = parseTotalMatches(totalMatchesStr);
 
         List<BrowsableItem> items = parseBrowseResult(resultXml, serverId);
-        if (dateSort) {
+        if (enrich) {
             items = enrichContainerDates(serverId, items);
         }
 
