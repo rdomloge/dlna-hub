@@ -30,6 +30,45 @@ mvn clean test           # Runs fine — 58 tests, all pass
 mvn spring-boot:run      # Starts on port 9100
 ```
 
+### Git (agents) — sandboxed push limitation
+
+`git status`, `git log`, `git diff`, `git add`, `git commit` all work fine
+in the sandbox. The sandbox only blocks commands that **spawn child processes**
+via `CreateFileMapping` — this includes `ssh.exe`, `sh.exe`, `bash.exe`, and
+any Git operation that needs to fork a subprocess.
+
+**`git push`, `git pull`, `git fetch` over SSH fail** with "CreateFileMapping
+Win32 error 5" because Git for Windows spawns `ssh.exe` as a child process.
+**`git push` over HTTPS also fails** in the sandbox — Schannel TLS
+(`SEC_E_NO_CREDENTIALS`) is unreliable in this environment.
+
+**Solution: use `gh api` for all remote operations.**
+`gh` uses its own HTTP-based protocol (no child process spawning):
+
+```powershell
+# Create/update branch ref via API (pushes the commit):
+gh api repos/rdomloge/dlna-hub/git/refs/heads/<branch> \
+  --method PATCH \
+  --field sha=<commit-sha>
+
+# Create a PR:
+gh pr create --base main --head <branch> --title "..." --body-file .pr-body.md
+
+# Verify remote state:
+gh api repos/rdomloge/dlna-hub/branches/<branch> --jq '.commit.sha'
+```
+
+The `gh` CLI itself is fully sandbox-compatible — authentication uses
+environment variables (`GITHUB_TOKEN`). Never waste time debugging git
+remote configuration (SSH keys, TLS backends, credential helpers) when
+`gh api` works directly.
+
+### Docker buildx (agents)
+
+`docker buildx` commands require `danger-full-access` sandbox escalation because
+they need access to the Docker daemon socket (`docker.sock`) and buildx lock files
+under `~/.docker`. The sandbox blocks these file operations by default.
+
 ## Stack
 - **Backend**: Java 21, Spring Boot 3.3.5, jupnp 3.0.2 (DLNA/UPnP)
 - **Frontend**: Vite 6, React 18, TypeScript, TailwindCSS 3, Zustand, Axios, React Router 6
