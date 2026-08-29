@@ -9,11 +9,13 @@ export function browse(
   index: number = 0,
   count: number = 50,
   sortBy: SortOption = '',
-  skipEnrich: boolean = false
+  skipEnrich: boolean = false,
+  signal?: AbortSignal
 ): Promise<BrowseResult> {
   return api
     .get(`/servers/${serverId}/browse`, {
       params: { objectId, index, count, sortBy, skipEnrich },
+      signal,
     })
     .then((res) => res.data);
 }
@@ -24,11 +26,13 @@ export function search(
   containerId: string = '0',
   index: number = 0,
   count: number = 50,
-  sortBy: SortOption = ''
+  sortBy: SortOption = '',
+  signal?: AbortSignal
 ): Promise<BrowseResult> {
   return api
     .get(`/servers/${serverId}/search`, {
       params: { containerId, query, index, count, sortBy },
+      signal,
     })
     .then((res) => res.data);
 }

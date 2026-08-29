@@ -83,6 +83,12 @@ export default function BrowsePage() {
   const latestRequestRef = useRef(0);
   const searchQueryRef = useRef('');
   const lastLoadedServerRef = useRef<string | null>(null);
+  // Captures the (folder, query) identity of the *current in-flight request* so the
+  // finally-block can reset isFetchingRef only when the request that owns that flag is
+  // still the latest one — and the guard blocks stale-identity responses from writing.
+  const activeRequestRef = useRef<string>('');
+  // AbortController for cancelling in-flight HTTP requests on navigation/sort/unmount.
+  const abortControllerRef = useRef<AbortController | null>(null);
   // Every effective date the stream has reported, keyed by container id. Merged into pages as
   // they load so later pages inherit dates the stream already computed for not-yet-loaded items.
   const appliedDatesRef = useRef<Map<string, string | null>>(new Map());
@@ -104,7 +110,18 @@ export default function BrowsePage() {
     async (oid: string, index: number, currentSort?: SortOption, query?: string) => {
       if (!selectedServer) return;
       if (index > 0 && isFetchingRef.current) return;
+      // Abort any previous in-flight request so the browser drops it and we don't waste bandwidth.
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      abortControllerRef.current = new AbortController();
       const requestId = ++latestRequestRef.current;
+      // Capture the identity of this request so stale-identity responses are dropped.
+      // This is the *new* authority: a request for a folder/query we've since navigated away from
+      // must never apply its result, even if it is the latest request (recency is not enough).
+      const targetOid = oid;
+      const targetQuery = (query ?? '').trim();
+      activeRequestRef.current = `${targetOid}\u0000${targetQuery}`;
       isFetchingRef.current = true;
       if (index === 0) setLoading(true);
       if (index > 0) setLoadingMore(true);
@@ -117,12 +134,16 @@ export default function BrowsePage() {
         // enrichment so the first page returns immediately; the SSE date stream fills in dates
         // in the background (see the stream effect below). Legacy mode keeps the enrichment.
         const streamMode = dateSortMode === 'stream' && isDateSort(activeSort) && !searching;
+        const signal = abortControllerRef.current?.signal;
         if (searching) {
-          result = await searchApi(selectedServer.id, trimmedQuery, oid, index, PAGE_SIZE, activeSort);
+          result = await searchApi(selectedServer.id, trimmedQuery, oid, index, PAGE_SIZE, activeSort, signal);
         } else {
-          result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort, streamMode);
+          result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort, streamMode, signal);
         }
         if (requestId !== latestRequestRef.current) return;
+        // Identity guard: reject if the current browse state has moved to a different folder
+        // or search query since this request was sent.
+        if (activeRequestRef.current !== `${oid}\u0000${targetQuery}`) return;
         isSearchingRef.current = searching;
         const received = index + result.items.length;
         // In stream mode for a date sort, fold in any effective dates the background stream has
@@ -150,9 +171,15 @@ export default function BrowsePage() {
         setError(null);
       } catch (err: any) {
         if (requestId !== latestRequestRef.current) return;
+        if (activeRequestRef.current !== `${oid}\u0000${targetQuery}`) return;
+        // Axios abort is expected during navigation; silently drop it.
+        if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') return;
         setError(err.message || 'Failed to load content');
       } finally {
-        if (requestId === latestRequestRef.current) {
+        // Only the latest-identity request (and recency) is allowed to settle: reset
+        // loading flags and the fetch-gate so a stale response never resets isFetchingRef
+        // for a newer request that is still in flight.
+        if (requestId === latestRequestRef.current && activeRequestRef.current === `${oid}\u0000${targetQuery}`) {
           setLoading(false);
           setLoadingMore(false);
           isFetchingRef.current = false;
@@ -327,6 +354,9 @@ export default function BrowsePage() {
   useEffect(() => {
     return () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
@@ -335,6 +365,14 @@ export default function BrowsePage() {
       updateBrowseState({ breadcrumb: [...breadcrumb, { id: item.id, title: item.title }] });
       setSearchQuery('');
       isSearchingRef.current = false;
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
       doBrowse(item.id, 0);
     } else {
       if (!selectedPlayer) {
@@ -350,6 +388,14 @@ export default function BrowsePage() {
     updateBrowseState({ breadcrumb: newBreadcrumb });
     setSearchQuery('');
     isSearchingRef.current = false;
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     doBrowse(newBreadcrumb[newBreadcrumb.length - 1].id, 0);
   };
 
@@ -366,6 +412,14 @@ export default function BrowsePage() {
     setShowSortMenu(false);
     setSearchQuery('');
     isSearchingRef.current = false;
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     setItems([]);
     doBrowse(objectId, 0, value);
   };
@@ -444,6 +498,14 @@ export default function BrowsePage() {
                 onClick={() => {
                   setSearchQuery('');
                   isSearchingRef.current = false;
+                  if (searchTimeoutRef.current) {
+                    clearTimeout(searchTimeoutRef.current);
+                    searchTimeoutRef.current = null;
+                  }
+                  if (abortControllerRef.current) {
+                    abortControllerRef.current.abort();
+                    abortControllerRef.current = null;
+                  }
                   fetchItems(objectId, 0);
                 }}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"

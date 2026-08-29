@@ -82,8 +82,12 @@ check as skipped.
   security (auth, CSRF, rate limiting) unless explicitly requested.
 
 ## Completion notification (Discord)
-When work on this repo is finished (a task, fix, or deployment is complete),
-notify the owner via Discord with a short summary of what was done. The webhook URL is
+When  
+- work on this repo is finished (a task, fix, or deployment is complete), 
+- or you are about to ask a question,
+- or you are about to ask permission to escalate privileges
+- or anything else that pauses work and waits for the owner
+...notify the owner via Discord with a short summary of what was done. The webhook URL is
 supplied the webhook_url.txt file, which is in .gitignore — set it in your shell profile. If it is unset, skip the notification.
 
 ```
