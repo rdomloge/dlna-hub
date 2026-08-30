@@ -127,10 +127,11 @@ When
 - or you are about to ask permission to escalate privileges
 - or anything else that pauses work and waits for the owner
 ...notify the owner via Discord with a short summary of what was done. The webhook URL is
-supplied the webhook_url.txt file, which is in .gitignore — set it in your shell profile. If it is unset, skip the notification.
+in `webhook_url.txt` (in `.gitignore`) — always read it from the file, never from an env var.
 
 ```
-curl.exe -s -X POST "$DISCORD_WEBHOOK_URL" -H "Content-Type: application/json" -d "{\"content\":\"<short summary>\"}"
+$webhook = (Get-Content -Path "webhook_url.txt" -Raw).Trim()
+curl.exe -s -X POST $webhook -H "Content-Type: application/json" -d "{\"content\":\"<short summary>\"}"
 ```
 
 Discord accepts a plain `{"content": "..."}` payload. A response of `204 No Content`
@@ -143,7 +144,8 @@ Schannel TLS can fail (curl exit 35, `SEC_E_NO_CREDENTIALS`; .NET throws
 the same payload with Node instead (its TLS does not use Schannel):
 
 ```
-node -e "fetch(process.env.DISCORD_WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:'<short summary>'})}).then(r=>console.log(r.status))"
+$webhook = (Get-Content -Path "webhook_url.txt" -Raw).Trim()
+node -e "fetch(process.argv[1],{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:process.argv[2]})}).then(r=>console.log(r.status))" $webhook "<short summary>"
 ```
 
 (A benign libuv assertion on Node exit after a successful 204 can be ignored.)
