@@ -9,6 +9,14 @@ export interface BrowseState {
   sortBy: string;
 }
 
+/**
+ * Which implementation backs date-ordering sorts.
+ * - `legacy`: the current blocking browse (capped, eventually-consistent effective dates).
+ * - `stream`: the new SSE effective-date stream (backend computes a complete uncapped cache in
+ *   the background and pushes each container's date as it is known).
+ */
+export type DateSortMode = 'legacy' | 'stream';
+
 interface AppState {
   selectedServer: MediaServer | null;
   setSelectedServer: (server: MediaServer | null) => void;
@@ -21,6 +29,8 @@ interface AppState {
   browseState: BrowseState;
   setBrowseState: (state: BrowseState) => void;
   updateBrowseState: (patch: Partial<BrowseState>) => void;
+  dateSortMode: DateSortMode;
+  setDateSortMode: (mode: DateSortMode) => void;
 }
 
 const defaultBrowseState: BrowseState = {
@@ -50,6 +60,8 @@ export const useAppStore = create<AppState>()(
       setBrowseState: (state) => set({ browseState: state }),
       updateBrowseState: (patch) =>
         set((s) => ({ browseState: { ...s.browseState, ...patch } })),
+      dateSortMode: 'stream',
+      setDateSortMode: (mode) => set({ dateSortMode: mode }),
     }),
     {
       name: 'dlna-app-state',
@@ -57,6 +69,7 @@ export const useAppStore = create<AppState>()(
         selectedServer: state.selectedServer,
         selectedPlayer: state.selectedPlayer,
         browseState: state.browseState,
+        dateSortMode: state.dateSortMode,
       }),
     }
   )

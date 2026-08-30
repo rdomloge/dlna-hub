@@ -51,3 +51,5 @@ stage-8.md
 
 ## Secrets (never commit the filled-in copy)
 k8s/secret.yml
+
+webhook_url.txt
