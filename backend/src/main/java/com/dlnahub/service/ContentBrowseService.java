@@ -727,6 +727,12 @@ public class ContentBrowseService {
      * per-subtree caps and a wall-clock deadline.
      */
     void runDateStream(String serverId, String objectId, DateStreamSink sink) throws IOException {
+        // Clear any previously cached container dates for this server so the stream
+        // always re-crawls and emits date events. This fixes the bug where repeated
+        // navigation to the same folder produces a stream with zero events because
+        // the cache still holds dates from a previous visit (same SystemUpdateID).
+        containerDateCache.remove(serverId);
+
         List<BrowsableItem> children = fetchAllChildren(serverId, objectId, STREAM_CHILDREN_FILTER, "");
         long totalContainers = children.stream().filter(BrowsableItem::isContainer).count();
         int crawled = 0;
