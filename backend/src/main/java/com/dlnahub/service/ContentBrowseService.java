@@ -704,7 +704,10 @@ public class ContentBrowseService {
             runDateStream(serverId, objectId, sink);
             emitter.complete();
         } catch (IOException e) {
-            // The client disconnected mid-stream (or the emitter was cancelled); stop quietly.
+            // The client disconnected mid-stream — invalidate the cache so the next stream
+            // starts fresh. An interrupted crawl may have left partial data that would
+            // confuse subsequent streams.
+            containerDateCache.remove(serverId);
             log.debug("Date stream for server={} container={} ended: {}", serverId, objectId, e.getMessage());
         } catch (RuntimeException e) {
             log.warn("Date stream for server={} container={} failed: {}", serverId, objectId, e.getMessage());
@@ -720,22 +723,22 @@ public class ContentBrowseService {
     /**
      * Runs the completion crawl for one folder: fetches the folder's direct children, then crawls
      * any container whose effective date is not already fresh in the cache, emitting a
-     * {@link DateEvent} per newly-known date and a terminal event at the end.
+     * {@link DateEvent} per newly-known date. For containers that are already fresh in the cache
+     * (from a previous crawl), events are emitted from the cache so the frontend always receives
+     * effective-date data regardless of how many times the folder is navigated.
      *
-     * <p>Containers already fresh in the cache produce no event. The crawl runs under a
-     * deliberately large shared budget (see {@link #STREAM_ITEM_BUDGET}) and is bounded by the
-     * per-subtree caps and a wall-clock deadline.
+     * <p>The crawl runs under a deliberately large shared budget (see {@link #STREAM_ITEM_BUDGET})
+     * and is bounded by the per-subtree caps and a wall-clock deadline.
+     *
+     * <p>If the stream is interrupted (client disconnect), the cache is cleared for this server
+     * so the next stream starts fresh. If the crawl completes, the cache is preserved —
+     * complete data is worth keeping.
      */
     void runDateStream(String serverId, String objectId, DateStreamSink sink) throws IOException {
-        // Clear any previously cached container dates for this server so the stream
-        // always re-crawls and emits date events. This fixes the bug where repeated
-        // navigation to the same folder produces a stream with zero events because
-        // the cache still holds dates from a previous visit (same SystemUpdateID).
-        containerDateCache.remove(serverId);
-
         List<BrowsableItem> children = fetchAllChildren(serverId, objectId, STREAM_CHILDREN_FILTER, "");
         long totalContainers = children.stream().filter(BrowsableItem::isContainer).count();
         int crawled = 0;
+        int fromCache = 0;
         log.info("Date stream started for server={} container={} ({} children, {} containers)",
                 serverId, objectId, children.size(), totalContainers);
         String updateId = getSystemUpdateId(serverId);
@@ -752,15 +755,26 @@ public class ContentBrowseService {
                 continue;
             }
             ContainerDateEntry fresh = crawlIfStale(serverId, item.getId(), updateId, budget, cache);
-            if (fresh == null) {
-                continue; // already known, or the crawl did not complete; retry on a later stream
+            if (fresh != null) {
+                // Newly crawled — emit date from the crawl result
+                String date = fresh.latestDate() != null ? fresh.latestDate().toString() : null;
+                sink.send(DateEvent.dateEvent(item.getId(), date, true));
+                crawled++;
+            } else {
+                // Cache hit — container is already known and fresh.
+                // Emit from cache so the frontend always gets date data,
+                // even when no new crawling is needed.
+                ContainerDateEntry cached = cache.get(item.getId());
+                if (cached != null && isFresh(cached, updateId, System.currentTimeMillis())) {
+                    String date = cached.latestDate() != null ? cached.latestDate().toString() : null;
+                    sink.send(DateEvent.dateEvent(item.getId(), date, true));
+                    fromCache++;
+                }
+                // else: stale entry that wasn't crawled; skip
             }
-            String date = fresh.latestDate() != null ? fresh.latestDate().toString() : null;
-            sink.send(DateEvent.dateEvent(item.getId(), date, true));
-            crawled++;
         }
-        log.info("Date stream finished for server={} container={}: crawled {} of {} containers, cache size={}",
-                serverId, objectId, crawled, totalContainers, cache.size());
+        log.info("Date stream finished for server={} container={}: crawled {} + {} from cache of {} containers, cache size={}",
+                serverId, objectId, crawled, fromCache, totalContainers, cache.size());
         sink.send(DateEvent.terminalEvent());
     }
 
