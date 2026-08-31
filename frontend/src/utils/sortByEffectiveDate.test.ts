@@ -43,7 +43,7 @@ describe('sortByEffectiveDate', () => {
       item('later', true, undefined, '2023-01-01T00:00:00Z'),
     ];
     expect(sortByEffectiveDate(items, true).map((i) => i.id)).toEqual(['later', 'dated', 'none']);
-    expect(sortByEffectiveDate(items, false).map((i) => i.id)).toEqual(['later', 'dated', 'none']);
+    expect(sortByEffectiveDate(items, false).map((i) => i.id)).toEqual(['dated', 'later', 'none']);
   });
 
   it('falls back to the container own date when it has no effective date', () => {
