@@ -121,6 +121,14 @@ check as skipped.
   security (auth, CSRF, rate limiting) unless explicitly requested.
 
 ## Completion notification (Discord)
+
+**CRITICAL: Always send a Discord notification BEFORE requesting sandbox
+escalation or asking the owner a question.** The owner may not be at their
+PC — if you escalate first and they're away, you waste time waiting for a
+response that will never come. The Discord message is what gets their
+attention. Sequence: (1) send Discord notification, (2) then escalate or ask.
+Never do it the other way around.
+
 When  
 - work on this repo is finished (a task, fix, or deployment is complete), 
 - or you are about to ask a question,
