@@ -14,6 +14,7 @@ import { useAppStore, type DateSortMode } from '@/store/useAppStore';
 import type { BrowsableItem } from '@/types/media';
 import { mediaDateLabel } from '@/utils/formatDate';
 import { sortByEffectiveDate } from '@/utils/sortByEffectiveDate';
+import { resolveBrowseAction } from '@/utils/resolveBrowseAction';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -82,7 +83,6 @@ export default function BrowsePage() {
   const isFetchingRef = useRef(false);
   const latestRequestRef = useRef(0);
   const searchQueryRef = useRef('');
-  const lastLoadedServerRef = useRef<string | null>(null);
   // Captures the (folder, query) identity of the *current in-flight request* so the
   // finally-block can reset isFetchingRef only when the request that owns that flag is
   // still the latest one — and the guard blocks stale-identity responses from writing.
@@ -208,12 +208,16 @@ export default function BrowsePage() {
 
   useEffect(() => {
     if (!selectedServer) {
-      lastLoadedServerRef.current = null;
       navigate('/servers');
       return;
     }
-    if (lastLoadedServerRef.current === selectedServer.id) return;
-    lastLoadedServerRef.current = selectedServer.id;
+    // Load the persisted folder on every mount.
+    // under StrictMode this body runs twice per mount, and the simulated unmount's cleanup
+    // aborts the first in-flight fetch; a ref guard would skip the replacement fetch and
+    // leave the page showing an empty folder (and, since items is component state, a plain
+    // refresh would do the same). fetchItems tolerates the abort (ERR_CANCELED) and the
+    // duplicate request is dropped by its identity/recency guards.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     doBrowse(browseState.objectId, 0, undefined, browseState.breadcrumb);
     // doBrowse / browseState are intentionally not dependencies: this effect is the
     // initial load for a newly selected server. Every later navigation, sort change and
@@ -361,7 +365,9 @@ export default function BrowsePage() {
   }, []);
 
   const handleNavigate = (item: BrowsableItem) => {
-    if (item.isContainer) {
+    const action = resolveBrowseAction(item.isContainer, !!selectedPlayer);
+
+    if (action === 'open') {
       updateBrowseState({ breadcrumb: [...breadcrumb, { id: item.id, title: item.title }] });
       setSearchQuery('');
       isSearchingRef.current = false;
@@ -374,13 +380,17 @@ export default function BrowsePage() {
         abortControllerRef.current = null;
       }
       doBrowse(item.id, 0);
-    } else {
-      if (!selectedPlayer) {
-        navigate('/players');
-        return;
-      }
-      navigate('/playback', { state: { item, autoplay: true } });
+      return;
     }
+
+    // No renderer selected: browsing is browse-only, so a media tap asks the
+    // user which renderer to use instead of trying (and silently failing) to play.
+    if (action === 'select-renderer') {
+      navigate('/players');
+      return;
+    }
+
+    navigate('/playback', { state: { item, autoplay: true } });
   };
 
   const handleBreadcrumbClick = (index: number) => {
@@ -441,6 +451,34 @@ export default function BrowsePage() {
     <div className="min-h-screen bg-gray-100 flex flex-col">
       <Header title={selectedServer.name} showBack onBack={handleBack} showPlayer={!!selectedPlayer} />
       <main className="flex-1 overflow-y-auto px-4 py-4 mt-14">
+        {!selectedPlayer && (
+          <div className="flex items-center gap-3 mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5 text-amber-600 shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <p className="flex-1 text-xs text-amber-900">
+              No renderer selected — browsing only. Tapping media picks a renderer instead of playing.
+            </p>
+            <button
+              onClick={() => navigate('/players')}
+              className="shrink-0 min-h-[36px] px-3 py-1.5 bg-gray-900 text-white text-xs rounded hover:bg-gray-800 transition-colors"
+            >
+              Select renderer
+            </button>
+          </div>
+        )}
         <nav className="flex items-center gap-1 overflow-x-auto pb-2 mb-3 scrollbar-hide">
           {breadcrumb.map((crumb, idx) => (
             <span key={crumb.id} className="flex items-center shrink-0">
@@ -658,10 +696,14 @@ export default function BrowsePage() {
               {items.map((item) => {
                 const type = mediaType(item.mimeType);
                 const dateLabel = item.isContainer ? mediaDateLabel(item) : null;
+                // Browsing without a renderer: media rows stay readable but are
+                // not playable — a tap routes to the renderer picker.
+                const readOnlyMedia = !item.isContainer && !selectedPlayer;
                 return (
                   <li key={item.id}>
                     <button
                       onClick={() => handleNavigate(item)}
+                      aria-label={readOnlyMedia ? `${item.title} — select a renderer to play` : undefined}
                       className="w-full text-left bg-white rounded-lg shadow-sm px-4 py-3 hover:bg-gray-50 transition-colors flex items-center gap-3 min-h-[56px]"
                     >
                       {item.isContainer ? (
@@ -684,7 +726,7 @@ export default function BrowsePage() {
                           src={getThumbnail(selectedServer.id, item.id)}
                           alt=""
                           loading="lazy"
-                          className="h-10 w-10 rounded object-cover shrink-0 bg-gray-200"
+                          className={`h-10 w-10 rounded object-cover shrink-0 bg-gray-200${readOnlyMedia ? ' opacity-60' : ''}`}
                           onError={(e) => {
                             // The proxy 404s when the URL has fallen out of the backend cache.
                             // Hide the broken image rather than showing a browser placeholder.
@@ -694,7 +736,7 @@ export default function BrowsePage() {
                       ) : (
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
-                          className="h-6 w-6 text-gray-400 shrink-0"
+                          className={`h-6 w-6 text-gray-400 shrink-0${readOnlyMedia ? ' opacity-60' : ''}`}
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
@@ -732,6 +774,11 @@ export default function BrowsePage() {
                           )
                         )}
                       </div>
+                      {readOnlyMedia && (
+                        <span className="shrink-0 text-[11px] font-medium text-amber-700 bg-amber-100 border border-amber-300 rounded px-2 py-1">
+                          Pick renderer
+                        </span>
+                      )}
                     </button>
                   </li>
                 );

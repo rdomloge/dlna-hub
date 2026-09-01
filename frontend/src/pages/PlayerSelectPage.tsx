@@ -58,6 +58,34 @@ export default function PlayerSelectPage() {
     navigate('/browse');
   };
 
+  // Shortcut: open the library without committing to a renderer, mirroring the
+  // header's "jump to the player" affordance. BrowsePage then runs in browse-only
+  // mode — folders navigate normally, a media tap routes back to this screen.
+  const handleBrowseOnly = () => {
+    if (selectedPlayer) {
+      resetPlayback();
+    }
+    setSelectedPlayer(null);
+    navigate('/browse');
+  };
+
+  const browseOnlyShortcut = (
+    <div className="mt-4 flex items-center gap-3 rounded-lg border border-gray-300 bg-white px-4 py-3 shadow-sm">
+      <div className="flex-1 min-w-0">
+        <p className="font-medium text-gray-900">Browse without a renderer</p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Look through the library only — nothing plays until you pick a renderer.
+        </p>
+      </div>
+      <button
+        onClick={handleBrowseOnly}
+        className="shrink-0 min-h-[44px] px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-800 transition-colors"
+      >
+        Browse only
+      </button>
+    </div>
+  );
+
   if (!selectedServer) {
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col">
@@ -117,6 +145,7 @@ export default function PlayerSelectPage() {
             ))}
           </ul>
         )}
+        {browseOnlyShortcut}
       </main>
     </div>
   );
