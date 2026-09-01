@@ -765,7 +765,7 @@ class ContentBrowseServiceTest {
     }
 
     @Test
-    void runDateStream_mixedKnownAndUnknown_emitsOnlyForUnknownThenTerminal() throws Exception {
+    void runDateStream_mixedKnownAndUnknown_emitsForAllContainersThenTerminal() throws Exception {
         // given
         FakeServer server = new FakeServer();
         // Folder 0 holds two containers and one loose dated file.
@@ -778,7 +778,8 @@ class ContentBrowseServiceTest {
         // c1's subtree has a dated file; c2's subtree has a dated file too.
         server.put("c1", didl("c1f", "c1", "movie", "object.item.videoItem", "2021-05-05T00:00:00Z"));
         server.put("c2", didl("c2f", "c2", "movie", "object.item.videoItem", "2022-06-06T00:00:00Z"));
-        // Warm c1 into the cache via the enrichment path so the stream skips it (c2 stays unknown).
+        // Warm c1 into the cache via the enrichment path so the stream emits it from cache
+        // (c2 stays unknown and will be crawled).
         svc.enrichContainerDates("srv", List.of(item("c1", "Known", null, null, true)));
         CollectingSink sink = new CollectingSink();
 
@@ -786,12 +787,19 @@ class ContentBrowseServiceTest {
         runStreamSync(svc, sink);
 
         // then
-        assertEquals(2, sink.events.size(), "one date event for c2 plus the terminal event");
-        assertEquals("c2", sink.events.get(0).id());
-        assertEquals("2022-06-06T00:00:00Z", sink.events.get(0).effectiveDate());
+        // c1 is emitted from cache (already fresh), c2 is emitted from the fresh crawl,
+        // followed by the terminal allDone event.
+        assertEquals(3, sink.events.size(), "one event from cache (c1), one crawled (c2), and the terminal");
+        // Events are emitted in children order: c1 first (from cache), then c2 (crawled).
+        assertEquals("c1", sink.events.get(0).id(), "cached container c1 is emitted first");
+        assertEquals("2021-05-05T00:00:00Z", sink.events.get(0).effectiveDate());
         assertTrue(sink.events.get(0).complete());
         assertFalse(sink.events.get(0).allDone());
-        assertTrue(sink.events.get(1).allDone(), "last event is the terminal allDone");
+        assertEquals("c2", sink.events.get(1).id(), "crawled container c2 is emitted second");
+        assertEquals("2022-06-06T00:00:00Z", sink.events.get(1).effectiveDate());
+        assertTrue(sink.events.get(1).complete());
+        assertFalse(sink.events.get(1).allDone());
+        assertTrue(sink.events.get(2).allDone(), "last event is the terminal allDone");
     }
 
     @Test
