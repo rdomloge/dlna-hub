@@ -62,7 +62,9 @@ export interface DateStreamEvent {
  * final `allDone` event when the completion crawl finishes (or immediately for a non-date sort).
  *
  * The caller is responsible for calling {@link EventSource.close} on navigation, sort change,
- * search, server switch, or unmount.
+ * search, server switch, or unmount. On error the stream closes itself before reporting via
+ * `onError`: the server never resumes a stream, and an auto-reconnect would only start another
+ * server-side crawl.
  */
 export function openDateStream(
   serverId: string,
@@ -81,8 +83,11 @@ export function openDateStream(
       // Malformed event; ignore rather than break the stream.
     }
   });
-  if (onError) {
-    source.onerror = (err) => onError(err);
-  }
+  source.onerror = (err) => {
+    // The server ended the stream without allDone (crawl failure) or the connection dropped.
+    // Close rather than let EventSource auto-reconnect (see the doc comment above).
+    source.close();
+    if (onError) onError(err);
+  };
   return source;
 }

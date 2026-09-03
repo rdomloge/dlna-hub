@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -17,6 +18,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -243,5 +247,166 @@ class DateStreamLifecycleTest {
 
         assertTrue(dateEvents > 0,
                 "TV date stream should emit at least one date event for containers");
+    }
+
+    // ========================================================================
+    // Live reproductions of the prod "Reacher looks old" race (2026-09-02).
+    //
+    // Prod logs showed: a TV stream finishes ("crawled 112"), 137 ms later a stream whose client
+    // had already navigated away dies with "Broken pipe", and the next TV browse has no effective
+    // dates at all (Reacher undated at index 75). These tests replay that against the real NAS
+    // through runDateStreamJob — the exact wrapper production uses — with a sink that fails the
+    // way a closed SSE connection does.
+    // ========================================================================
+
+    /** A sink that records events and, once {@code failAfter} sends succeeded, fails like a closed connection. */
+    static final class DisconnectingSink implements ContentBrowseService.DateStreamSink {
+        final List<DateEvent> events = new CopyOnWriteArrayList<>();
+        final int failAfter;
+
+        DisconnectingSink(int failAfter) {
+            this.failAfter = failAfter;
+        }
+
+        @Override
+        public void send(DateEvent event) throws IOException {
+            if (events.size() >= failAfter) {
+                throw new IOException("Broken pipe");
+            }
+            events.add(event);
+        }
+    }
+
+    /** Root > Video > TV, or null (with a SKIP note) when the tree does not look like the test NAS. */
+    private String findTvFolder(MediaServer srv) {
+        BrowseResult rootResult = contentBrowseService.browse(srv.getId(), "0", 0, 200, "", "");
+        String videoId = null;
+        for (BrowsableItem it : rootResult.getItems()) {
+            if (it.isContainer() && it.getTitle().toLowerCase().contains("video")) {
+                videoId = it.getId();
+                break;
+            }
+        }
+        if (videoId == null) {
+            System.out.println("SKIP: no Video folder found in Root");
+            return null;
+        }
+        BrowseResult videoResult = contentBrowseService.browse(srv.getId(), videoId, 0, 200, "", "");
+        for (BrowsableItem it : videoResult.getItems()) {
+            if (it.isContainer() && it.getTitle().toLowerCase().contains("tv")) {
+                return it.getId();
+            }
+        }
+        System.out.println("SKIP: no TV folder found inside Video");
+        return null;
+    }
+
+    /** Dates emitted by a complete stream over the folder, keyed by container id. */
+    private Map<String, String> warmFolderDates(MediaServer srv, String folderId) throws IOException {
+        DisconnectingSink full = new DisconnectingSink(Integer.MAX_VALUE);
+        contentBrowseService.runDateStream(srv.getId(), folderId, full);
+        Map<String, String> dates = new HashMap<>();
+        for (DateEvent e : full.events) {
+            if (e.id() != null && e.effectiveDate() != null) {
+                dates.put(e.id(), e.effectiveDate());
+            }
+        }
+        return dates;
+    }
+
+    /** The browse the UI issues in stream mode for a date-descending folder view. */
+    private BrowseResult streamModeBrowse(MediaServer srv, String folderId) {
+        return contentBrowseService.browse(srv.getId(), folderId, 0, 200, "", "-dc:date", true);
+    }
+
+    /** Asserts every container the stream dated still carries that date in the revisit browse. */
+    private static void assertDatesSurvived(Map<String, String> streamed, BrowseResult revisit, String scenario) {
+        int survived = 0;
+        List<String> lost = new ArrayList<>();
+        BrowsableItem reacher = null;
+        int reacherIndex = -1;
+        for (int i = 0; i < revisit.getItems().size(); i++) {
+            BrowsableItem it = revisit.getItems().get(i);
+            if (!it.isContainer()) continue;
+            if (it.getTitle() != null && it.getTitle().toLowerCase().contains("reach")) {
+                reacher = it;
+                reacherIndex = i;
+            }
+            String expected = streamed.get(it.getId());
+            if (expected == null) continue;
+            if (expected.equals(it.getEffectiveDate())) {
+                survived++;
+            } else {
+                lost.add(it.getTitle() + " (stream said " + expected + ", browse says " + it.getEffectiveDate() + ")");
+            }
+        }
+        System.out.println(scenario + ": " + survived + "/" + streamed.size() + " streamed dates survived; Reacher at index "
+                + reacherIndex + " with effectiveDate=" + (reacher != null ? reacher.getEffectiveDate() : "n/a"));
+        assertEquals(streamed.size(), survived, scenario + ": " + lost.size() + " of " + streamed.size()
+                + " containers lost the effective date the stream had just computed, e.g. "
+                + lost.subList(0, Math.min(3, lost.size())) + "; Reacher is at index " + reacherIndex
+                + " with effectiveDate=" + (reacher != null ? reacher.getEffectiveDate() : "n/a"));
+    }
+
+    @Test
+    @DisplayName("Live: a TV stream whose client leaves after one event must not wipe TV's dates")
+    void runDateStreamJob_liveTvClientDisconnects_completedDatesRemainCached() throws Exception {
+        // given
+        MediaServer srv = synology();
+        if (srv == null) {
+            System.out.println("SKIP: no UPnP media server discovered");
+            return;
+        }
+        String tvId = findTvFolder(srv);
+        if (tvId == null) return;
+        Map<String, String> streamed = warmFolderDates(srv, tvId);
+        assertTrue(streamed.size() > 0, "the full TV stream should date at least one show");
+        System.out.println("Full TV stream dated " + streamed.size() + " containers");
+
+        // when
+        // A second visit to TV whose client navigates away after the first event (the stream is
+        // served from cache, so this is quick), then the browse the UI issues on the next visit.
+        contentBrowseService.runDateStreamJob(srv.getId(), tvId, new SseEmitter(),
+                new DisconnectingSink(1), new AtomicBoolean(false));
+        BrowseResult revisit = streamModeBrowse(srv, tvId);
+
+        // then
+        assertDatesSurvived(streamed, revisit, "TV stream disconnect");
+    }
+
+    @Test
+    @DisplayName("Live: TV -> Reacher -> back to TV; the abandoned Reacher stream must not wipe TV's dates")
+    void runDateStreamJob_liveNavigateIntoReacherAndBack_tvDatesRemainCached() throws Exception {
+        // given
+        MediaServer srv = synology();
+        if (srv == null) {
+            System.out.println("SKIP: no UPnP media server discovered");
+            return;
+        }
+        String tvId = findTvFolder(srv);
+        if (tvId == null) return;
+        String reacherId = null;
+        for (BrowsableItem it : contentBrowseService.browse(srv.getId(), tvId, 0, 200, "", "").getItems()) {
+            if (it.isContainer() && it.getTitle().toLowerCase().contains("reach")) {
+                reacherId = it.getId();
+                break;
+            }
+        }
+        if (reacherId == null) {
+            System.out.println("SKIP: no Reacher-like folder found in TV");
+            return;
+        }
+        Map<String, String> streamed = warmFolderDates(srv, tvId);
+        assertTrue(streamed.size() > 0, "the full TV stream should date at least one show");
+
+        // when
+        // The user opens Reacher (its date stream starts) and taps back to TV before the first
+        // event lands, so the Reacher stream's first send fails like a closed connection.
+        contentBrowseService.runDateStreamJob(srv.getId(), reacherId, new SseEmitter(),
+                new DisconnectingSink(0), new AtomicBoolean(false));
+        BrowseResult revisit = streamModeBrowse(srv, tvId);
+
+        // then
+        assertDatesSurvived(streamed, revisit, "TV -> Reacher -> TV");
     }
 }

@@ -15,6 +15,7 @@ import type { BrowsableItem } from '@/types/media';
 import { mediaDateLabel } from '@/utils/formatDate';
 import { sortByEffectiveDate } from '@/utils/sortByEffectiveDate';
 import { resolveBrowseAction } from '@/utils/resolveBrowseAction';
+import { reloadCountAfterDates } from '@/utils/reloadCountAfterDates';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -83,6 +84,8 @@ export default function BrowsePage() {
   const isFetchingRef = useRef(false);
   const latestRequestRef = useRef(0);
   const searchQueryRef = useRef('');
+  // Rows currently loaded, for the post-allDone reload (a ref so callbacks stay stable).
+  const itemsCountRef = useRef(0);
   // Captures the (folder, query) identity of the *current in-flight request* so the
   // finally-block can reset isFetchingRef only when the request that owns that flag is
   // still the latest one — and the guard blocks stale-identity responses from writing.
@@ -106,8 +109,12 @@ export default function BrowsePage() {
     searchQueryRef.current = searchQuery;
   }, [searchQuery]);
 
+  useEffect(() => {
+    itemsCountRef.current = items.length;
+  }, [items.length]);
+
   const fetchItems = useCallback(
-    async (oid: string, index: number, currentSort?: SortOption, query?: string) => {
+    async (oid: string, index: number, currentSort?: SortOption, query?: string, count: number = PAGE_SIZE) => {
       if (!selectedServer) return;
       if (index > 0 && isFetchingRef.current) return;
       // Abort any previous in-flight request so the browser drops it and we don't waste bandwidth.
@@ -136,9 +143,9 @@ export default function BrowsePage() {
         const streamMode = dateSortMode === 'stream' && isDateSort(activeSort) && !searching;
         const signal = abortControllerRef.current?.signal;
         if (searching) {
-          result = await searchApi(selectedServer.id, trimmedQuery, oid, index, PAGE_SIZE, activeSort, signal);
+          result = await searchApi(selectedServer.id, trimmedQuery, oid, index, count, activeSort, signal);
         } else {
-          result = await browseApi(selectedServer.id, oid, index, PAGE_SIZE, activeSort, streamMode, signal);
+          result = await browseApi(selectedServer.id, oid, index, count, activeSort, streamMode, signal);
         }
         if (requestId !== latestRequestRef.current) return;
         // Identity guard: reject if the current browse state has moved to a different folder
@@ -198,6 +205,12 @@ export default function BrowsePage() {
       if (newBreadcrumb) {
         updateBrowseState({ breadcrumb: newBreadcrumb });
       }
+      if (index === 0) {
+        // A new folder (or a retry): drop the previous folder's rows and its hasMore, so nothing
+        // stale is shown under the new breadcrumb or appended to by the scroll observer.
+        setItems([]);
+        setHasMore(false);
+      }
       setLoading(index === 0);
       setError(null);
       if (index > 0) setLoadingMore(true);
@@ -230,13 +243,18 @@ export default function BrowsePage() {
   const applyStreamDate = useCallback(
     (event: DateStreamEvent) => {
       if (event.allDone) {
-        // The list is final. Close the EventSource explicitly so the browser does not
-        // auto-reconnect (EventSource retries on any closed connection).
+        // Every folder's date is now known. Close the EventSource explicitly so the browser
+        // does not auto-reconnect (EventSource retries on any closed connection).
         if (dateStreamRef.current) {
           dateStreamRef.current.close();
           dateStreamRef.current = null;
         }
         setDatesPending(false);
+        // Reload the rows on screen from the server, whose sorted snapshot for this folder was
+        // rebuilt with the full set of dates when the stream finished. Re-sorting only the
+        // loaded rows cannot surface a folder that was never loaded: on a cold cache the server
+        // sorts undated folders last, so a newly-dated one may still be sitting on page 2.
+        fetchItems(objectId, 0, undefined, undefined, reloadCountAfterDates(itemsCountRef.current, PAGE_SIZE));
         return;
       }
       const id = event.id;
@@ -252,7 +270,7 @@ export default function BrowsePage() {
           : next;
       });
     },
-    [sortBy]
+    [sortBy, objectId, fetchItems]
   );
 
   // Opens (or re-opens) the effective-date stream when the user is in `stream` mode looking at a
@@ -290,8 +308,9 @@ export default function BrowsePage() {
       sortBy as SortOption,
       (event) => applyStreamDate(event),
       (err) => {
-        // The stream errored (or the server went away). Stop it and fall back to best-effort:
-        // the already-sorted list stays; a later page load or re-sort reuses the cached dates.
+        // The stream errored or the server ended it without allDone (a crawl failure).
+        // openDateStream has already closed it (no auto-reconnect); fall back to best-effort:
+        // the already-sorted list stays, and the next visit reuses whatever the cache holds.
         if (dateStreamRef.current === source) dateStreamRef.current = null;
         setDatesPending(false);
         void err;

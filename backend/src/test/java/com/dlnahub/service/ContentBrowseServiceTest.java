@@ -2,6 +2,7 @@ package com.dlnahub.service;
 
 import com.dlnahub.dlna.UpnpServiceManager;
 import com.dlnahub.dlna.model.BrowsableItem;
+import com.dlnahub.dlna.model.BrowseResult;
 import com.dlnahub.dlna.model.DateEvent;
 import org.jupnp.controlpoint.ActionCallback;
 import org.jupnp.model.action.ActionInvocation;
@@ -16,6 +17,7 @@ import org.jupnp.model.types.UDAServiceType;
 import org.jupnp.model.types.ServiceId;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.net.URI;
@@ -24,6 +26,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -624,7 +631,9 @@ class ContentBrowseServiceTest {
      */
     private static final class FakeServer {
         final Map<String, String> childrenXml = new LinkedHashMap<>();
-        int browseCalls = 0;
+        final AtomicInteger browseCalls = new AtomicInteger();
+        /** Optional hook invoked with the objectID of every Browse call (lets a test pause a crawl). */
+        volatile Consumer<String> onBrowse;
 
         /**
          * Stores the container's direct children, wrapped in a {@code <DIDL-Lite>} root so the
@@ -705,8 +714,11 @@ class ContentBrowseServiceTest {
             protected ActionCallback createCallback(ActionInvocation invocation) {
                 String actionName = invocation.getAction().getName();
                 if ("Browse".equals(actionName)) {
-                    server.browseCalls++;
                     String objectID = String.valueOf(invocation.getInput("objectID").getValue());
+                    server.browseCalls.incrementAndGet();
+                    if (server.onBrowse != null) {
+                        server.onBrowse.accept(objectID);
+                    }
                     String xml = server.childrenXml.getOrDefault(objectID, "");
                     try {
                         invocation.setOutput("Result", xml);
@@ -887,6 +899,200 @@ class ContentBrowseServiceTest {
 
         // then
         // A non-date sort must not run any crawl: no Browse calls are made.
-        assertEquals(0, server.browseCalls, "a non-date sort streams nothing and crawls nothing");
+        assertEquals(0, server.browseCalls.get(), "a non-date sort streams nothing and crawls nothing");
+    }
+
+    // ------------------------------------------------------------------------
+    // Reproductions of the prod "Reacher looks old" race. These drive runDateStreamJob — the
+    // exact path production takes — rather than runDateStream, because the client-disconnect
+    // handling lives in the job wrapper.
+    // ------------------------------------------------------------------------
+
+    /** A Video/TV-shaped tree in miniature: {@code tv} holds three shows, Reacher the newest. */
+    private static void putTvTree(FakeServer server) {
+        server.put("tv",
+                didl("s1", "tv", "s1", "object.container", null)
+                        + didl("s2", "tv", "s2", "object.container", null)
+                        + didl("reacher", "tv", "Reacher", "object.container", null));
+        server.put("s1", didl("s1f", "s1", "ep", "object.item.videoItem", "2020-01-01T00:00:00Z"));
+        server.put("s2", didl("s2f", "s2", "ep", "object.item.videoItem", "2021-01-01T00:00:00Z"));
+        server.put("reacher", didl("rf", "reacher", "ep", "object.item.videoItem", "2026-08-26T20:52:43Z"));
+    }
+
+    /** The browse the UI issues in stream mode for a date-descending folder view. */
+    private static BrowseResult streamModeBrowse(ContentBrowseService svc, String folder) {
+        return svc.browse("srv", folder, 0, 50, "", "-dc:date", true);
+    }
+
+    private static List<String> ids(List<DateEvent> events) {
+        List<String> out = new ArrayList<>();
+        for (DateEvent e : events) {
+            out.add(e.id());
+        }
+        return out;
+    }
+
+    /** Titles of the containers in a browse result that carry no effective date. */
+    private static List<String> undatedContainers(BrowseResult result) {
+        List<String> out = new ArrayList<>();
+        for (BrowsableItem it : result.getItems()) {
+            if (it.isContainer() && it.getEffectiveDate() == null) {
+                out.add(it.getTitle());
+            }
+        }
+        return out;
+    }
+
+    @Test
+    void runDateStreamJob_clientDisconnectsMidStream_completedDatesRemainCached() {
+        // given
+        FakeServer server = new FakeServer();
+        putTvTree(server);
+        ContentBrowseService svc = serviceWithFakeServer(server);
+        CollectingSink sink = new CollectingSink();
+        // The client navigates away after two events. By the time the third send fails, all
+        // three shows have been crawled and stored (each send happens after its crawl).
+        sink.failAfter = 2;
+
+        // when
+        svc.runDateStreamJob("srv", "tv", new SseEmitter(), sink, new AtomicBoolean(false));
+        BrowseResult revisit = streamModeBrowse(svc, "tv");
+
+        // then
+        assertEquals(List.of("s1", "s2"), ids(sink.events), "two events reached the client before it left");
+        assertFalse(sink.events.stream().anyMatch(DateEvent::allDone), "no terminal event after a disconnect");
+        assertEquals(List.of(), undatedContainers(revisit),
+                "shows that lost their effective date because a client disconnected mid-stream");
+        assertEquals(List.of("Reacher", "s2", "s1"), titles(revisit.getItems()),
+                "the revisit must be ordered by the dates the stream had already computed");
+    }
+
+    @Test
+    void runDateStreamJob_concurrentZombieDisconnects_liveStreamDatesSurviveInCache() throws Exception {
+        // given
+        FakeServer server = new FakeServer();
+        putTvTree(server);
+        // A second folder the user has already left; its stream is still crawling (a "zombie").
+        server.put("video", didl("movies", "video", "Movies", "object.container", null));
+        server.put("movies", didl("mf", "movies", "film", "object.item.videoItem", "2024-01-01T00:00:00Z"));
+        ContentBrowseService svc = serviceWithFakeServer(server);
+        // Pause the live TV stream the first time it browses s1: it has taken its reference to
+        // the server's date-cache map by then, but has not stored anything yet.
+        CountDownLatch insideCrawl = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        AtomicBoolean firstS1 = new AtomicBoolean(true);
+        server.onBrowse = id -> {
+            if ("s1".equals(id) && firstS1.getAndSet(false)) {
+                insideCrawl.countDown();
+                try {
+                    resume.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        CollectingSink liveSink = new CollectingSink();
+        CollectingSink zombieSink = new CollectingSink();
+        zombieSink.failAfter = 0; // the zombie's client is already gone: its first send fails
+
+        // when
+        Thread live = new Thread(
+                () -> svc.runDateStreamJob("srv", "tv", new SseEmitter(), liveSink, new AtomicBoolean(false)),
+                "live-tv-stream");
+        live.start();
+        assertTrue(insideCrawl.await(10, TimeUnit.SECONDS), "the live stream should reach its first crawl");
+        svc.runDateStreamJob("srv", "video", new SseEmitter(), zombieSink, new AtomicBoolean(false));
+        resume.countDown();
+        live.join(10_000);
+        BrowseResult revisit = streamModeBrowse(svc, "tv");
+
+        // then
+        assertFalse(live.isAlive(), "the live stream should finish");
+        assertEquals(4, liveSink.events.size(), "three shows plus the terminal event");
+        assertEquals(List.of("s1", "s2", "reacher"), ids(liveSink.events.subList(0, 3)),
+                "the live stream emitted every show");
+        assertTrue(liveSink.events.get(3).allDone());
+        assertEquals(List.of(), undatedContainers(revisit),
+                "shows whose dates the live stream computed but a zombie's disconnect threw away");
+        assertEquals(List.of("Reacher", "s2", "s1"), titles(revisit.getItems()));
+    }
+
+    @Test
+    void runDateStreamJob_cancelledBeforeFirstSend_stopsCrawlingWithinOneCall() {
+        // given
+        FakeServer server = new FakeServer();
+        // Video/TV in miniature: one folder whose single child has a ten-show subtree, so the
+        // stream's first send only happens after the whole subtree has been crawled.
+        StringBuilder shows = new StringBuilder();
+        for (int i = 0; i < 10; i++) {
+            shows.append(didl("show" + i, "tv", "Show " + i, "object.container", null));
+            server.put("show" + i, didl("ep" + i, "show" + i, "ep", "object.item.videoItem",
+                    "2020-01-0" + (i % 9 + 1) + "T00:00:00Z"));
+        }
+        server.put("video", didl("tv", "video", "TV", "object.container", null));
+        server.put("tv", shows.toString());
+        ContentBrowseService svc = serviceWithFakeServer(server);
+        // The client has already gone away (the emitter's callbacks flipped the flag); like the
+        // production sink, this one refuses to send once that is so.
+        AtomicBoolean cancelled = new AtomicBoolean(true);
+        ContentBrowseService.DateStreamSink sink = event -> {
+            if (cancelled.get()) {
+                throw new IOException("date stream closed");
+            }
+        };
+
+        // when
+        svc.runDateStreamJob("srv", "video", new SseEmitter(), sink, cancelled);
+
+        // then
+        assertTrue(server.browseCalls.get() <= 2,
+                "a cancelled stream must stop within one UPnP call, but made " + server.browseCalls.get()
+                        + " Browse calls: it crawled the whole subtree before noticing the client was gone");
+    }
+
+    @Test
+    void runDateStream_finished_evictsFolderSnapshot() throws Exception {
+        // given
+        FakeServer server = new FakeServer();
+        putTvTree(server);
+        ContentBrowseService svc = serviceWithFakeServer(server);
+        // The UI's first, cold browse: nothing is dated yet, so the folder's cached sorted
+        // snapshot is in server order.
+        BrowseResult cold = streamModeBrowse(svc, "tv");
+        assertEquals(List.of("s1", "s2", "Reacher"), titles(cold.getItems()), "cold snapshot is in server order");
+
+        // when
+        svc.runDateStream("srv", "tv", new CollectingSink());
+        BrowseResult reloaded = streamModeBrowse(svc, "tv");
+
+        // then
+        // Without eviction the 60 s snapshot would still answer in cold order; the client's
+        // post-allDone reload must instead see every folder dated and in true order.
+        assertEquals(List.of(), undatedContainers(reloaded));
+        assertEquals(List.of("Reacher", "s2", "s1"), titles(reloaded.getItems()));
+    }
+
+    @Test
+    void runDateStreamJob_crawlFails_noTerminalEvent() {
+        // given
+        FakeServer server = new FakeServer();
+        putTvTree(server);
+        // The NAS falls over while the second show is being crawled.
+        server.onBrowse = id -> {
+            if ("s2".equals(id)) {
+                throw new IllegalStateException("NAS unavailable");
+            }
+        };
+        ContentBrowseService svc = serviceWithFakeServer(server);
+        CollectingSink sink = new CollectingSink();
+
+        // when
+        svc.runDateStreamJob("srv", "tv", new SseEmitter(), sink, new AtomicBoolean(false));
+
+        // then
+        // A failed stream must not claim the list is final: the client takes its error path
+        // instead of believing every folder now has a date.
+        assertEquals(List.of("s1"), ids(sink.events), "only the show crawled before the failure was emitted");
+        assertFalse(sink.events.stream().anyMatch(DateEvent::allDone), "no allDone after a crawl failure");
     }
 }

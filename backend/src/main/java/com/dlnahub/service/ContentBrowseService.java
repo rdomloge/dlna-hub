@@ -47,7 +47,11 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
 @Service
@@ -88,6 +92,7 @@ public class ContentBrowseService {
     private static final long STREAM_DEADLINE_MS = 15 * 60 * 1000L; // 15-minute wall-clock cap for one stream
     private static final long STREAM_EMITTER_TIMEOUT_MS = 20 * 60 * 1000L;   // SseEmitter timeout (above the deadline)
     private static final String STREAM_CHILDREN_FILTER = "dc:title,upnp:class,dc:date";
+    private static final long STREAM_HEARTBEAT_MS = 1_000L;   // SSE comment cadence; a failed heartbeat = client gone
 
     /**
      * Small pool for background effective-date stream jobs. Two threads are plenty for a LAN
@@ -100,9 +105,23 @@ public class ContentBrowseService {
         return t;
     });
 
+    /**
+     * Sends a one-line SSE comment on every open date stream once a second. A crawl can spend
+     * seconds inside a subtree without writing anything, so without this a client that has
+     * navigated away is only discovered when the next date event fails to send — by which time
+     * the abandoned job has held a pool thread and the NAS for a whole subtree crawl. A failed
+     * heartbeat flips the stream's cancelled flag, which the crawl checks before every UPnP call.
+     */
+    private final ScheduledExecutorService dateStreamHeartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "date-stream-heartbeat");
+        t.setDaemon(true);
+        return t;
+    });
+
     @PreDestroy
     void shutdownDateStreamPool() {
         dateStreamPool.shutdownNow();
+        dateStreamHeartbeat.shutdownNow();
     }
 
 
@@ -145,16 +164,40 @@ public class ContentBrowseService {
         }
     }
 
+    /**
+     * The limits a crawl runs under: an item budget (the latency cap of the blocking browse) and
+     * a cancellation signal (the SSE client went away). The signal is checked before every UPnP
+     * call, so an abandoned stream stops within one call instead of finishing its subtree.
+     */
     private static final class CrawlBudget {
         final int max;
+        final BooleanSupplier cancelled;
         int visited;
 
         CrawlBudget(int max) {
+            this(max, () -> false);
+        }
+
+        CrawlBudget(int max, BooleanSupplier cancelled) {
             this.max = max;
+            this.cancelled = cancelled;
         }
 
         boolean exhausted() {
             return visited >= max;
+        }
+
+        void checkCancelled() {
+            if (cancelled.getAsBoolean()) {
+                throw new StreamCancelledException();
+            }
+        }
+    }
+
+    /** Thrown inside a crawl once the stream's client has gone away; the job ends quietly and keeps the cache. */
+    static final class StreamCancelledException extends RuntimeException {
+        StreamCancelledException() {
+            super("date stream cancelled by the client");
         }
     }
 
@@ -195,6 +238,12 @@ public class ContentBrowseService {
                     .ifPresent(e -> sortedPageCache.remove(e.getKey()));
         }
         sortedPageCache.put(key, new SortedSet(List.copyOf(items), System.currentTimeMillis()));
+    }
+
+    /** Drops every cached sorted set for one browsed folder (all sorts, enriched or not). */
+    private void evictSortedSets(String serverId, String objectId) {
+        String prefix = serverId + "\u0000browse\u0000" + objectId + "\u0000";
+        sortedPageCache.keySet().removeIf(key -> key.startsWith(prefix));
     }
 
     @Autowired
@@ -683,7 +732,27 @@ public class ContentBrowseService {
             return emitter;
         }
 
-        dateStreamPool.execute(() -> runDateStreamJob(serverId, objectId, emitter, sink, cancelled));
+        // Heartbeat: notices a departed client while the job is still queued or deep in a crawl.
+        ScheduledFuture<?> heartbeat = dateStreamHeartbeat.scheduleAtFixedRate(() -> {
+            if (cancelled.get()) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().comment("ping"));
+            } catch (Exception e) {
+                // IOException (connection gone) or IllegalStateException (response already
+                // completed by the container): either way nobody is listening any more.
+                cancelled.set(true);
+            }
+        }, STREAM_HEARTBEAT_MS, STREAM_HEARTBEAT_MS, TimeUnit.MILLISECONDS);
+
+        dateStreamPool.execute(() -> {
+            try {
+                runDateStreamJob(serverId, objectId, emitter, sink, cancelled);
+            } finally {
+                heartbeat.cancel(false);
+            }
+        });
         return emitter;
     }
 
@@ -693,29 +762,37 @@ public class ContentBrowseService {
             if (cancelled.get()) {
                 throw new IOException("date stream closed");
             }
-            emitter.send(SseEmitter.event().name("date").data(event));
+            try {
+                emitter.send(SseEmitter.event().name("date").data(event));
+            } catch (IOException e) {
+                cancelled.set(true);
+                throw e;
+            } catch (IllegalStateException e) {
+                // The container already completed the response (client gone): same as a closed stream.
+                cancelled.set(true);
+                throw new IOException("date stream closed: " + e.getMessage(), e);
+            }
         };
     }
 
-    private void runDateStreamJob(String serverId, String objectId,
+    void runDateStreamJob(String serverId, String objectId,
                                   SseEmitter emitter, DateStreamSink sink, AtomicBoolean cancelled) {
         try {
             // runDateStream ends by sending the terminal allDone event.
-            runDateStream(serverId, objectId, sink);
+            runDateStream(serverId, objectId, sink, cancelled::get);
             emitter.complete();
-        } catch (IOException e) {
-            // The client disconnected mid-stream — invalidate the cache so the next stream
-            // starts fresh. An interrupted crawl may have left partial data that would
-            // confuse subsequent streams.
-            containerDateCache.remove(serverId);
-            log.debug("Date stream for server={} container={} ended: {}", serverId, objectId, e.getMessage());
+        } catch (StreamCancelledException | IOException e) {
+            // The client went away (navigated on, closed the tab, lost the connection). Stop, and
+            // KEEP everything computed so far: the cache only ever holds complete crawls, so there
+            // is nothing partial to clean up, and the next stream for any folder on this server
+            // starts warm. (Wiping the whole server's cache here is what used to make every
+            // revisit recrawl from scratch and left folders undated for seconds at a time.)
+            log.debug("Date stream for server={} container={} abandoned by the client: {}",
+                    serverId, objectId, e.getMessage());
         } catch (RuntimeException e) {
+            // A real failure (e.g. the NAS answered a UPnP error). Do not pretend the list is
+            // final: no allDone, just end the response so the client stops waiting.
             log.warn("Date stream for server={} container={} failed: {}", serverId, objectId, e.getMessage());
-            try {
-                sink.send(DateEvent.terminalEvent());
-            } catch (IOException ignored) {
-                // best effort: the client is probably already gone
-            }
             emitter.completeWithError(e);
         }
     }
@@ -730,11 +807,22 @@ public class ContentBrowseService {
      * <p>The crawl runs under a deliberately large shared budget (see {@link #STREAM_ITEM_BUDGET})
      * and is bounded by the per-subtree caps and a wall-clock deadline.
      *
-     * <p>If the stream is interrupted (client disconnect), the cache is cleared for this server
-     * so the next stream starts fresh. If the crawl completes, the cache is preserved —
-     * complete data is worth keeping.
+     * <p>If the client disconnects mid-stream the crawl stops at the next UPnP call and every
+     * complete result computed so far stays cached, so the next stream for this server starts
+     * warm.
      */
     void runDateStream(String serverId, String objectId, DateStreamSink sink) throws IOException {
+        runDateStream(serverId, objectId, sink, () -> false);
+    }
+
+    /**
+     * As {@link #runDateStream(String, String, DateStreamSink)}, but stops with a
+     * {@link StreamCancelledException} as soon as {@code cancelled} reports the client has gone.
+     */
+    void runDateStream(String serverId, String objectId, DateStreamSink sink, BooleanSupplier cancelled)
+            throws IOException {
+        CrawlBudget budget = new CrawlBudget(STREAM_ITEM_BUDGET, cancelled);
+        budget.checkCancelled(); // a stream that waited in the pool queue may already be abandoned
         List<BrowsableItem> children = fetchAllChildren(serverId, objectId, STREAM_CHILDREN_FILTER, "");
         long totalContainers = children.stream().filter(BrowsableItem::isContainer).count();
         int crawled = 0;
@@ -745,9 +833,9 @@ public class ContentBrowseService {
         Map<String, ContainerDateEntry> cache =
                 containerDateCache.computeIfAbsent(serverId, k -> new ConcurrentHashMap<>());
         long deadline = System.currentTimeMillis() + STREAM_DEADLINE_MS;
-        CrawlBudget budget = new CrawlBudget(STREAM_ITEM_BUDGET);
 
         for (BrowsableItem item : children) {
+            budget.checkCancelled();
             if (System.currentTimeMillis() > deadline) {
                 break;
             }
@@ -775,6 +863,9 @@ public class ContentBrowseService {
         }
         log.info("Date stream finished for server={} container={}: crawled {} + {} from cache of {} containers, cache size={}",
                 serverId, objectId, crawled, fromCache, totalContainers, cache.size());
+        // The folder's dates changed under any sorted snapshot built before or during this stream;
+        // drop it so the client's post-allDone reload is sorted with the full set of dates.
+        evictSortedSets(serverId, objectId);
         sink.send(DateEvent.terminalEvent());
     }
 
@@ -1084,6 +1175,7 @@ public class ContentBrowseService {
      */
     private CrawlResult crawlSubtree(String serverId, String containerId, String updateId, int depth,
                                       CrawlBudget budget, Map<String, ContainerDateEntry> cache) {
+        budget.checkCancelled();
         if (depth > CRAWL_MAX_DEPTH || budget.exhausted()) {
             return new CrawlResult(null, false);
         }
@@ -1121,6 +1213,7 @@ public class ContentBrowseService {
         List<BrowsableItem> all = new ArrayList<>();
         int start = 0;
         while (!budget.exhausted()) {
+            budget.checkCancelled();
             BrowseResult page = browseInternal(serverId, containerId, start, CRAWL_PAGE_SIZE,
                     "dc:title,upnp:class,dc:date", "");
             for (BrowsableItem item : page.getItems()) {
