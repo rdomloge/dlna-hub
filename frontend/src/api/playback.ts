@@ -56,8 +56,18 @@ export function backward(playerId: string): Promise<void> {
     .then(() => undefined);
 }
 
-export function getStatus(playerId: string): Promise<PlaybackStatus> {
-  return api.get(`/players/${playerId}/status`).then((res) => res.data);
+/**
+ * Poll the renderer.
+ *
+ * `includeVolume` maps to a second UPnP service (RenderingControl), so each status call is
+ * really two SOAP round-trips to the renderer. Volume only changes when someone touches the
+ * TV or the Xbox remote, so the playback page asks for it occasionally rather than on every
+ * poll; callers that only care about position (subtitle sync) should pass `false`.
+ */
+export function getStatus(playerId: string, includeVolume = true): Promise<PlaybackStatus> {
+  return api
+    .get(`/players/${playerId}/status`, { params: { includeVolume } })
+    .then((res) => res.data);
 }
 
 export function setVolume(playerId: string, volume: number): Promise<void> {

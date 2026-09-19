@@ -22,6 +22,15 @@ public class PlaybackController {
 
     private static final Logger log = LoggerFactory.getLogger(PlaybackController.class);
 
+    /**
+     * The UPnP transport state reported while a renderer is setting the stream up. A renderer that
+     * is connecting has no position to report, and asking for one is expensive rather than merely
+     * pointless: the Xbox answers GetTransportInfo promptly but stops answering its whole control
+     * endpoint until the stream is up, so GetPositionInfo sits out jUPnP's full 10s timeout and
+     * holds up the status response with it — long enough for the UI to give up waiting on us.
+     */
+    private static final String STATE_CONNECTING = "CONNECTING";
+
     private final AvTransportService avTransportService;
     private final RenderingControlService renderingControlService;
 
@@ -82,31 +91,41 @@ public class PlaybackController {
     }
 
     @GetMapping("/{playerId}/status")
-    public ResponseEntity<PlaybackStatusDto> status(@PathVariable String playerId) {
-        log.debug("Status request for player {}", playerId);
+    public ResponseEntity<PlaybackStatusDto> status(@PathVariable String playerId,
+                                                      @RequestParam(defaultValue = "true") boolean includeVolume) {
+        log.debug("Status request for player {} (includeVolume={})", playerId, includeVolume);
         String state = avTransportService.getTransportState(playerId);
-        String trackUri;
-        String trackDuration;
-        String trackPosition;
-        String trackTitle;
-        try {
-            var positionInfo = avTransportService.getPositionInfo(playerId);
-            trackUri = positionInfo.trackUri();
-            trackDuration = positionInfo.trackDuration();
-            trackPosition = positionInfo.trackPosition();
-            trackTitle = DidlUtils.extractTitleFromMetadata(positionInfo.trackMetaData());
-        } catch (Exception e) {
-            log.warn("GetPositionInfo failed for player {}: {}", playerId, e.getMessage());
-            trackUri = "";
-            trackDuration = "00:00:00";
-            trackPosition = "00:00:00";
-            trackTitle = null;
+
+        // Null rather than "00:00:00" for anything we did not learn: a zero is a real position
+        // reading, and the UI would move the playhead to the start on it. Absent means "keep
+        // whatever is already on screen".
+        String trackUri = null;
+        String trackDuration = null;
+        String trackPosition = null;
+        String trackTitle = null;
+        if (!STATE_CONNECTING.equalsIgnoreCase(state)) {
+            try {
+                var positionInfo = avTransportService.getPositionInfo(playerId);
+                trackUri = positionInfo.trackUri();
+                trackDuration = positionInfo.trackDuration();
+                trackPosition = positionInfo.trackPosition();
+                trackTitle = DidlUtils.extractTitleFromMetadata(positionInfo.trackMetaData());
+            } catch (Exception e) {
+                // The state is worth having alongside this: a renderer that refuses the position
+                // call while claiming to be PLAYING is a different problem from one that is
+                // honestly still CONNECTING, and this is the only place we see the difference.
+                log.warn("GetPositionInfo failed for player {} while state={}: {}",
+                        playerId, state, e.getMessage());
+            }
         }
+
         Integer volume = null;
-        try {
-            volume = renderingControlService.getVolume(playerId);
-        } catch (Exception e) {
-            log.warn("GetVolume failed for player {}: {}", playerId, e.getMessage());
+        if (includeVolume) {
+            try {
+                volume = renderingControlService.getVolume(playerId);
+            } catch (Exception e) {
+                log.warn("GetVolume failed for player {}: {}", playerId, e.getMessage());
+            }
         }
 
         PlaybackStatusDto dto = new PlaybackStatusDto();

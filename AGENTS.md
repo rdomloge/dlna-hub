@@ -168,6 +168,10 @@ https://www.jupnp.org/docs/advanced
 ...and the JavaDoc at https://www.javadoc.io/doc/org.jupnp/org.jupnp
 Don't guess how it's used and don't try decompiling the code - work from the docs or the clone of the repo in ./jupnp
 
+**`./jupnp` is a read-only clone of the third-party jupnp repository — use it for reference only**
+(e.g. checking how `ActionCallback` or `ActionInvocation` behave). We never modify, build, or
+test it; all app code changes go under `backend/` (or `frontend/`) only.
+
 ## API Endpoints (all under `/api`)
 
 ### Servers (`ServerController`, `BrowseController`)

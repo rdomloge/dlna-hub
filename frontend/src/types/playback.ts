@@ -6,6 +6,9 @@ export type TransportState =
   | 'TRANSITIONING'
   | 'RECORDING'
   | 'NO_MEDIA_PRESENT'
+  /** The renderer accepted the URI and is bringing the stream up. It answers no other control
+   *  call in this state, which is why a status poll asks for transport state only. */
+  | 'CONNECTING'
   | 'UNKNOWN';
 
 export interface PlaybackStatus {

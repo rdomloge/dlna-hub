@@ -161,7 +161,8 @@ export default function SubtitlePanel({
     try {
       const samples: { seconds: number; clockMs: number }[] = [];
       for (let i = 0; i < BURST_SAMPLES; i++) {
-        const status = await getStatus(playerId);
+        // Only the position matters here, so don't pay for the volume round-trip as well.
+        const status = await getStatus(playerId, false);
         samples.push({
           seconds: parseTime(status.trackPosition || '00:00:00'),
           clockMs: performance.now(),

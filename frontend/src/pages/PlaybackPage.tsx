@@ -94,6 +94,15 @@ export default function PlaybackPage() {
     }
   }, [selectedPlayer, navigate]);
 
+  // The browser keeps the window scroll offset across client-side navigations,
+  // so entering playback (media tap or the header "player" button) after
+  // scrolling elsewhere could leave the player controls out of view.
+  // location.key changes on every navigation to this route, including
+  // re-entries while the page is already mounted.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [location.key]);
+
   useEffect(() => {
     if (!trackTitle) return;
     const parsed = cleanMediaTitle(trackTitle);
@@ -184,12 +193,23 @@ export default function PlaybackPage() {
 
   const MAX_CONSECUTIVE_ERRORS = 3;
   const PLAY_PENDING_TIMEOUT_MS = 15000;
+  /** Polls between volume reads. Volume only changes when someone touches the TV remote, and
+   *  each read is a SOAP round-trip to the renderer — see getStatus. */
+  const VOLUME_POLL_EVERY = 5;
+  const pollCountRef = useRef(0);
 
   const pollStatus = useCallback(async () => {
     if (!selectedPlayer || pollInFlightRef.current) return;
     pollInFlightRef.current = true;
+    // Ask for volume on the first poll (the slider needs a starting value), while one of our
+    // own writes is unconfirmed (the reconciliation below needs the echo), and every few
+    // polls after that to notice a change made on the TV.
+    const wantVolume = pendingVolumeRef.current !== null
+      || pollCountRef.current === 0
+      || pollCountRef.current % VOLUME_POLL_EVERY === 0;
+    pollCountRef.current += 1;
     try {
-      const status = await getStatus(selectedPlayer.id);
+      const status = await getStatus(selectedPlayer.id, wantVolume);
       consecutiveErrorsRef.current = 0;
       setPlaybackStatus(status);
       setIsPlaying(status.state === 'PLAYING');
@@ -214,16 +234,23 @@ export default function PlaybackPage() {
       }
 
       if (!isScrubbingRef.current) {
-        const pos = parseTime(status.trackPosition || '00:00:00');
-        const dur = parseTime(status.trackDuration || '00:00:00');
-        // While the user has it paused the position cannot advance on its own. A renderer
-        // that has quietly dropped the paused stream answers 00:00:00 for both, which would
-        // snap the scrubber back to the start — ignore that and keep the pause point.
-        if (!userPaused || pos > 0) {
-          setCurrentTime(pos);
+        // An absent position or duration means we did not ask, or the renderer could not
+        // answer — it stops answering while it is CONNECTING. Keep what is on screen: reading
+        // it as 00:00:00 snaps the playhead back to the start and blanks the duration.
+        if (status.trackPosition) {
+          const pos = parseTime(status.trackPosition);
+          // While the user has it paused the position cannot advance on its own. A renderer
+          // that has quietly dropped the paused stream answers 00:00:00, which would snap the
+          // scrubber back to the start — ignore that and keep the pause point.
+          if (!userPaused || pos > 0) {
+            setCurrentTime(pos);
+          }
         }
-        if (!userPaused || dur > 0) {
-          setDuration(dur);
+        if (status.trackDuration) {
+          const dur = parseTime(status.trackDuration);
+          if (!userPaused || dur > 0) {
+            setDuration(dur);
+          }
         }
       }
 
@@ -278,6 +305,7 @@ export default function PlaybackPage() {
     setReconnecting(true);
     consecutiveErrorsRef.current = 0;
     pendingVolumeRef.current = null;
+    pollCountRef.current = 0;
     pollStatusRef.current();
   }, [selectedPlayer, isVisible, setReconnecting]);
 
